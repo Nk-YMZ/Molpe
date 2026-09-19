@@ -444,7 +444,8 @@ func (m *Model) cycleMode() tea.Cmd {
 		m.queue.SetMode(queue.ModeSequential)
 	}
 	m.saveQueue()
-	return m.setNote("播放模式：" + modeLabel(m.queue.Mode()))
+	// 模式已实时反映在状态栏播放信息中，无需额外提示。
+	return nil
 }
 
 // adjustVolume 按步进调整音量（0-100），应用到播放器与桌面环境并持久化到配置文件。
@@ -464,7 +465,8 @@ func (m *Model) adjustVolume(delta int) tea.Cmd {
 	if m.mpris != nil {
 		m.mpris.SetVolume(float64(v) / 100)
 	}
-	return m.setNote(fmt.Sprintf("音量：%d%%", v))
+	// 音量已实时反映在状态栏播放信息中，无需额外提示。
+	return nil
 }
 
 // saveConfig 将当前配置写回配置文件。
@@ -655,26 +657,29 @@ func (m Model) viewContent() string {
 	return lipgloss.JoinVertical(lipgloss.Left, header, "", body, "", m.statusView(), m.help.View(m))
 }
 
-// statusView 渲染状态栏：错误提示、普通提示或当前播放信息。
+// statusView 渲染状态栏：常驻播放信息，操作提示追加其后（到期自动消失）；
+// 仅错误提示会整行替换。
 func (m Model) statusView() string {
 	if m.errNote != "" {
 		return m.sty.Error.Render(m.errNote)
 	}
-	if m.note != "" {
-		return m.sty.Muted.Render(m.note)
-	}
+	var status string
 	if m.playing == nil {
-		return m.sty.Muted.Render("未在播放")
+		status = m.sty.Muted.Render("未在播放")
+	} else {
+		icon := "▶ "
+		if m.paused {
+			icon = "⏸ "
+		}
+		status = m.sty.Status.Render(icon+m.playing.song.Name+" - "+m.playing.song.Artists) +
+			m.sty.Muted.Render(fmt.Sprintf(" [%s] [%s] [音量 %d%%]",
+				qualityLabel(m.playing.level), modeLabel(m.queue.Mode()), m.volume))
+		if n := len(m.queue.NextUp()); n > 0 {
+			status += m.sty.Muted.Render(fmt.Sprintf(" [待播 %d]", n))
+		}
 	}
-	icon := "▶ "
-	if m.paused {
-		icon = "⏸ "
-	}
-	status := m.sty.Status.Render(icon+m.playing.song.Name+" - "+m.playing.song.Artists) +
-		m.sty.Muted.Render(fmt.Sprintf(" [%s] [%s] [音量 %d%%]",
-			qualityLabel(m.playing.level), modeLabel(m.queue.Mode()), m.volume))
-	if n := len(m.queue.NextUp()); n > 0 {
-		status += m.sty.Muted.Render(fmt.Sprintf(" [待播 %d]", n))
+	if m.note != "" {
+		status += m.sty.Muted.Render(" · " + m.note)
 	}
 	return status
 }
