@@ -14,6 +14,8 @@ const appName = "molpe"
 
 const configFile = "config.json"
 
+const defaultTheme = "default"
+
 // Config 是面向用户的配置文件内容。
 type Config struct {
 	// Quality 音质偏好：standard / higher / exhigh / lossless / hires。
@@ -48,11 +50,18 @@ const (
 
 // DefaultConfig 返回默认配置。
 func DefaultConfig() Config {
+	volume := defaultVolume
+	translation := true
 	above, below := defaultLyricGap, defaultLyricGap
 	return Config{
-		Quality:       "lossless",
-		LyricGapAbove: &above,
-		LyricGapBelow: &below,
+		Quality:          "lossless",
+		Volume:           &volume,
+		VolumeStep:       defaultVolumeStep,
+		LyricTranslation: &translation,
+		LyricLines:       defaultLyricLines,
+		LyricGapAbove:    &above,
+		LyricGapBelow:    &below,
+		Theme:            defaultTheme,
 	}
 }
 
@@ -125,9 +134,67 @@ func LoadConfig(dir string) (Config, error) {
 	return cfg, nil
 }
 
-// SaveConfig 将配置写入 dir 下的 config.json。
+// configHelp 是 config.json 内的自说明字段。标准 JSON 不支持注释，
+// 因此用读取时会被忽略的 _说明 对象记录每项含义与合法取值。
+type configHelp struct {
+	Quality          string `json:"quality"`
+	AutoPlay         string `json:"auto_play"`
+	Volume           string `json:"volume"`
+	VolumeStep       string `json:"volume_step"`
+	LyricTranslation string `json:"lyric_translation"`
+	LyricLines       string `json:"lyric_lines"`
+	LyricGapAbove    string `json:"lyric_gap_above"`
+	LyricGapBelow    string `json:"lyric_gap_below"`
+	Theme            string `json:"theme"`
+}
+
+// configFileData 是写入磁盘的完整配置模板。字段不使用 omitempty，确保新建文件
+// 总是列出所有可用配置项；_说明 会在后续保存时继续保留。
+type configFileData struct {
+	Help             configHelp `json:"_说明"`
+	Quality          string     `json:"quality"`
+	AutoPlay         bool       `json:"auto_play"`
+	Volume           int        `json:"volume"`
+	VolumeStep       int        `json:"volume_step"`
+	LyricTranslation bool       `json:"lyric_translation"`
+	LyricLines       int        `json:"lyric_lines"`
+	LyricGapAbove    int        `json:"lyric_gap_above"`
+	LyricGapBelow    int        `json:"lyric_gap_below"`
+	Theme            string     `json:"theme"`
+}
+
+func newConfigFileData(cfg Config) configFileData {
+	theme := cfg.Theme
+	if theme == "" {
+		theme = defaultTheme
+	}
+	return configFileData{
+		Help: configHelp{
+			Quality:          "音质偏好；可选值：standard（标准）、higher（较高）、exhigh（极高）、lossless（无损）、hires（Hi-Res）；修改后重启生效",
+			AutoPlay:         "启动后是否自动继续播放上次退出时的歌曲；可选值：true、false",
+			Volume:           "播放音量百分比；整数，范围：0-100",
+			VolumeStep:       "按 +/- 调节音量时的步进百分比；整数，范围：1-100",
+			LyricTranslation: "歌词是否显示翻译；可选值：true、false",
+			LyricLines:       "歌词区域显示的总行数；整数，范围：1-15",
+			LyricGapAbove:    "歌词区域与上方正文区域之间的空行数；整数，范围：0-5",
+			LyricGapBelow:    "歌词区域与下方进度条之间的空行数；整数，范围：0-5",
+			Theme:            "主题名称，对应 themes/<名称>.json；字符串，例如：default、ember",
+		},
+		Quality:          cfg.Quality,
+		AutoPlay:         cfg.AutoPlay,
+		Volume:           cfg.EffectiveVolume(),
+		VolumeStep:       cfg.EffectiveVolumeStep(),
+		LyricTranslation: cfg.EffectiveLyricTranslation(),
+		LyricLines:       cfg.EffectiveLyricLines(),
+		LyricGapAbove:    cfg.EffectiveLyricGapAbove(),
+		LyricGapBelow:    cfg.EffectiveLyricGapBelow(),
+		Theme:            theme,
+	}
+}
+
+// SaveConfig 将带完整说明的配置写入 dir 下的 config.json。
 func SaveConfig(dir string, cfg Config) error {
-	return SaveJSON(dir, configFile, cfg)
+	return SaveJSON(dir, configFile, newConfigFileData(cfg))
 }
 
 // LoadJSON 从 dir 下的 name 文件读取 JSON 到 v；文件不存在时返回 nil（v 保持不变）。
