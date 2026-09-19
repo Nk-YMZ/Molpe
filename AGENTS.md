@@ -204,3 +204,10 @@ MPRIS 桌面集成已实现（总线名 `org.mpris.MediaPlayer2.molpe`）：
   KDE 媒体组件可正常显示封面并控制
 - 接收系统媒体控制（Play/Pause/PlayPause/Stop/Next/Previous，切歌走队列逻辑）
 - D-Bus 不可用时降级运行，不影响主体功能
+
+Arch Linux 打包：
+
+- 版本从 Git 标签 `v<版本>` 发布，根目录 `PKGBUILD` 从对应标签构建源码包
+- 软件包安装可执行文件到 `/usr/bin/molpe`，运行时依赖 `glibc` 与 `mpv`
+- GitHub Release 附带 `molpe-<版本>-<pkgrel>-x86_64.pkg.tar.zst`；本地产物放在忽略提交的 `dist/`
+- AUR 预编译包名为 `molpe-bin`，仅从 GitHub Release 下载产物，安装后的启动命令仍为 `molpe`
