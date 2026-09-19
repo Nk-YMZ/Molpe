@@ -44,7 +44,9 @@ UI 分层约定（交互/渲染解耦）：
   `viewState`（`view.go`），列表项等切片直接引用不拷贝
 - 渲染层（`theme.go`、`view.go`）是唯一允许 import lipgloss 的地方；`renderXxx` 为纯函数，
   只消费快照与 styles，不接触 netease/queue 等内部类型
-- 主题文件（`$XDG_CONFIG_HOME/molpe/themes/*.json`）只能改配色（colors）、符号（glyphs）
+- `default` 与 `ember` 主题通过 `go:embed` 编译进二进制，不写入配置目录；
+  `$XDG_CONFIG_HOME/molpe/themes/*.json` 仅用于追加自定义主题（同名文件不覆盖内置主题）
+- 自定义主题文件只能改配色（colors）、符号（glyphs）
   与弹窗边框样式（border：rounded/square/none 枚举），不能改布局、尺寸、动效或新增装饰元素；
   布局由代码固定，歌词行数等数值统一在 config.json；
   背景色由主题的 `colors.background` 提供（仅 "#rrggbb"），缺省或非法值回退纯黑；
@@ -57,8 +59,8 @@ UI 分层约定（交互/渲染解耦）：
   主文本优先、次文本过窄整列舍弃；正文标题与列表块左缘对齐）、弹窗带一格微光字符阴影（░）、
   登录页二维码装框居中并带块状旋转帧（▖▘▝▗，150ms，仅登录页运行）；
   切歌后状态栏曲名逐字出现（24ms/字，尾部带光标块，出现后定时器彻底停止）
-- 主题与默认值逐字段合并（只需写出想覆盖的字段），缺失/损坏回退默认主题并提示；
-  按 `t` 打开主题选择弹窗（打开时重新扫描目录，重新选中即热重载），主题名随 config 落盘
+- 自定义主题与默认值逐字段合并（只需写出想覆盖的字段），缺失/损坏回退默认主题并提示；
+  按 `t` 打开主题选择弹窗（合并内置主题并重新扫描扩展目录，重新选中即热重载），主题名随 config 落盘
 - 新功能的扩展路径：新 msg + Update 分支（交互）→ viewState 加字段（快照）→
   renderXxx + 需要时 Theme 加 token（渲染）
 
@@ -169,7 +171,7 @@ UI 分层约定（交互/渲染解耦）：
   `volume` 音量（0-100，缺省 100，退出时统一固化回配置文件，运行期间不写盘）、`volume_step` 调节步进（默认 5）、
   `lyric_translation` 歌词是否含翻译（默认 true）、`lyric_lines` 歌词显示总行数（默认 5，范围 1-15）、
   `lyric_gap_above`/`lyric_gap_below` 歌词区与上方正文、下方进度条之间的空行数（默认均为 1，范围 0-5，0 即紧凑）、
-  `theme` 主题名（默认 default，对应 themes/<name>.json）
+  `theme` 主题名（默认 `default`；内置 `default`/`ember`，其他名称对应扩展目录 themes/<name>.json）
 - `config.json` 不存在时生成包含全部配置项、显式默认值与 `_说明` 对象的合法 JSON 模板；
   `_说明` 逐项写明用途和合法取值，读取时自动忽略，后续保存配置时继续保留
 - 队列核心在 `internal/queue`（纯逻辑、可单测，不依赖网络与外部进程）：

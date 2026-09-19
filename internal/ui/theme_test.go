@@ -76,10 +76,23 @@ func TestLoadThemeCorrupt(t *testing.T) {
 func TestEnsureThemesAndList(t *testing.T) {
 	dir := t.TempDir()
 	if err := EnsureThemes(dir); err != nil {
-		t.Fatalf("写入默认主题失败: %v", err)
+		t.Fatalf("创建扩展主题目录失败: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, themesDir, defaultThemeName+".json")); !os.IsNotExist(err) {
+		t.Fatalf("内置默认主题不应写入配置目录: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, themesDir, emberThemeName+".json")); !os.IsNotExist(err) {
+		t.Fatalf("内置 ember 主题不应写入配置目录: %v", err)
 	}
 	if _, err := LoadTheme(dir, ""); err != nil {
 		t.Fatalf("默认主题应可加载: %v", err)
+	}
+	ember, err := LoadTheme(dir, emberThemeName)
+	if err != nil {
+		t.Fatalf("ember 内置主题应可加载: %v", err)
+	}
+	if ember.Colors.Accent != "#e0a458" || ember.Colors.Background != "#000000" {
+		t.Errorf("ember 内置主题内容不符: %+v", ember.Colors)
 	}
 	// 幂等：重复调用不报错
 	if err := EnsureThemes(dir); err != nil {
@@ -92,8 +105,18 @@ func TestEnsureThemesAndList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("扫描失败: %v", err)
 	}
-	if len(names) != 2 || names[0] != "b" || names[1] != "default" {
+	if len(names) != 3 || names[0] != "b" || names[1] != defaultThemeName || names[2] != emberThemeName {
 		t.Errorf("主题列表不符: %v", names)
+	}
+}
+
+func TestListThemesWithoutExtensionDirectory(t *testing.T) {
+	names, err := ListThemes(t.TempDir())
+	if err != nil {
+		t.Fatalf("无扩展目录时仍应列出内置主题: %v", err)
+	}
+	if len(names) != 2 || names[0] != defaultThemeName || names[1] != emberThemeName {
+		t.Errorf("内置主题列表不符: %v", names)
 	}
 }
 

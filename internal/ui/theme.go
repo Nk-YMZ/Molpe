@@ -1,8 +1,12 @@
 package ui
 
 import (
+	_ "embed"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"image/color"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -11,8 +15,6 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
-
-	"molpe/internal/config"
 )
 
 // themesDir 是配置目录下存放主题文件的子目录。
@@ -20,6 +22,22 @@ const themesDir = "themes"
 
 // defaultThemeName 是默认主题名（对应 default.json）。
 const defaultThemeName = "default"
+
+const emberThemeName = "ember"
+
+// 内置主题通过 go:embed 编译进二进制，发布时无需在配置目录携带主题文件。
+// $XDG_CONFIG_HOME/molpe/themes/ 仅用于追加用户自定义主题。
+//
+//go:embed themes/default.json
+var builtinDefaultThemeJSON []byte
+
+//go:embed themes/ember.json
+var builtinEmberThemeJSON []byte
+
+var builtinThemeData = map[string][]byte{
+	defaultThemeName: builtinDefaultThemeJSON,
+	emberThemeName:   builtinEmberThemeJSON,
+}
 
 // Colors 主题配色；值为 ANSI 色号（如 "15"）或十六进制颜色（如 "#ffffff"）。
 //
@@ -96,10 +114,10 @@ type Theme struct {
 	Border string `json:"border,omitempty"`
 }
 
-// DefaultTheme 返回默认主题。
+// fallbackTheme 是内置 default.json 意外损坏时的编译期兜底。
 // 默认配色选用终端基础色（16 色内），Faint 使用 256 色深灰，
 // 在未支持 256 色的终端上会由终端自行降级，不破坏可读性。
-func DefaultTheme() Theme {
+func fallbackTheme() Theme {
 	return Theme{
 		Colors: Colors{
 			Background: "#000000",
@@ -127,6 +145,15 @@ func DefaultTheme() Theme {
 	}
 }
 
+// DefaultTheme 返回编译进程序的默认主题。
+func DefaultTheme() Theme {
+	t := fallbackTheme()
+	if err := json.Unmarshal(builtinDefaultThemeJSON, &t); err != nil {
+		return fallbackTheme()
+	}
+	return t
+}
+
 // BackgroundColor 返回主题的背景色；仅解析 "#rrggbb"，缺省或非法时为纯黑。
 func (t Theme) BackgroundColor() color.Color {
 	s := t.Colors.Background
@@ -138,21 +165,17 @@ func (t Theme) BackgroundColor() color.Color {
 	return color.Black
 }
 
-// EnsureThemes 确保主题目录存在且默认主题文件已写入（便于用户复制修改）。
+// EnsureThemes 确保外部扩展主题目录存在；内置主题不会写入该目录。
 func EnsureThemes(dir string) error {
-	path := filepath.Join(dir, themesDir, defaultThemeName+".json")
-	if _, err := os.Stat(path); err == nil {
-		return nil
-	}
-	if err := config.SaveJSON(filepath.Join(dir, themesDir), defaultThemeName+".json", DefaultTheme()); err != nil {
-		return fmt.Errorf("写入默认主题失败: %w", err)
+	if err := os.MkdirAll(filepath.Join(dir, themesDir), 0o755); err != nil {
+		return fmt.Errorf("创建扩展主题目录失败: %w", err)
 	}
 	return nil
 }
 
-// LoadTheme 从 dir/themes/ 下加载名为 name 的主题（不含扩展名）；
-// 空名称使用默认主题。主题文件与默认值逐字段合并：未指定的字段
-// 保留默认，故主题文件只需写出想覆盖的字段。
+// LoadTheme 优先按名称加载内置主题；其他名称从 dir/themes/ 扩展目录加载。
+// 空名称使用内置默认主题。外部主题与默认值逐字段合并：未指定的字段
+// 保留默认，故主题文件只需写出想覆盖的字段。同名外部文件不覆盖内置主题。
 // 文件缺失或损坏时返回默认主题与错误，由调用方提示用户。
 func LoadTheme(dir, name string) (Theme, error) {
 	if name == "" {
@@ -161,11 +184,30 @@ func LoadTheme(dir, name string) (Theme, error) {
 	if strings.ContainsAny(name, `/\`) || strings.Contains(name, "..") {
 		return DefaultTheme(), fmt.Errorf("非法主题名 %q", name)
 	}
-	if _, err := os.Stat(filepath.Join(dir, themesDir, name+".json")); err != nil {
+	if data, ok := builtinThemeData[name]; ok {
+		t, err := decodeTheme(data)
+		if err != nil {
+			return DefaultTheme(), fmt.Errorf("解析内置主题 %s 失败: %w", name, err)
+		}
+		return t, nil
+	}
+	data, err := os.ReadFile(filepath.Join(dir, themesDir, name+".json"))
+	if errors.Is(err, fs.ErrNotExist) {
 		return DefaultTheme(), fmt.Errorf("主题 %s 不存在", name)
 	}
+	if err != nil {
+		return DefaultTheme(), fmt.Errorf("读取主题 %s 失败: %w", name, err)
+	}
+	t, err := decodeTheme(data)
+	if err != nil {
+		return DefaultTheme(), fmt.Errorf("解析主题 %s 失败: %w", name, err)
+	}
+	return t, nil
+}
+
+func decodeTheme(data []byte) (Theme, error) {
 	t := DefaultTheme()
-	if err := config.LoadJSON(filepath.Join(dir, themesDir), name+".json", &t); err != nil {
+	if err := json.Unmarshal(data, &t); err != nil {
 		return DefaultTheme(), err
 	}
 	t.Colors.fillDefaults()
@@ -178,18 +220,25 @@ func LoadTheme(dir, name string) (Theme, error) {
 	return t, nil
 }
 
-// ListThemes 扫描 dir/themes 下的主题名（不含扩展名，按名称排序）。
+// ListThemes 合并内置主题与 dir/themes 下的扩展主题名，去重后排序。
 func ListThemes(dir string) ([]string, error) {
+	seen := make(map[string]struct{}, len(builtinThemeData))
+	for name := range builtinThemeData {
+		seen[name] = struct{}{}
+	}
 	entries, err := os.ReadDir(filepath.Join(dir, themesDir))
-	if err != nil {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, fmt.Errorf("读取主题目录失败: %w", err)
 	}
-	names := []string{}
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
-		names = append(names, strings.TrimSuffix(e.Name(), ".json"))
+		seen[strings.TrimSuffix(e.Name(), ".json")] = struct{}{}
+	}
+	names := make([]string, 0, len(seen))
+	for name := range seen {
+		names = append(names, name)
 	}
 	sort.Strings(names)
 	return names, nil

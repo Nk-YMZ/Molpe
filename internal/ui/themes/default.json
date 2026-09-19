@@ -1,0 +1,25 @@
+{
+  "colors": {
+    "background": "#000000",
+    "foreground": "15",
+    "muted": "8",
+    "faint": "238",
+    "accent": "10",
+    "accent2": "11",
+    "error": "9"
+  },
+  "glyphs": {
+    "cursor": "▌ ",
+    "playing": "▶ ",
+    "paused": "⏸ ",
+    "playlist_created": "✎",
+    "playlist_starred": "♥",
+    "popup_header_rule": "─",
+    "progress_fill": "█",
+    "progress_head": "",
+    "progress_empty": "░",
+    "rule": "─",
+    "header_mark": "▞"
+  },
+  "border": "rounded"
+}

@@ -11,8 +11,8 @@ const themePickerMaxRows = 12
 // themePickerWidth 主题选择弹窗内容宽度（字符数）。
 const themePickerWidth = 32
 
-// themePicker 主题选择弹窗。打开时重新扫描主题目录，
-// 因此修改主题文件后重新打开或再次选中即可生效。
+// themePicker 主题选择弹窗。打开时合并内置主题并重新扫描扩展主题目录，
+// 因此修改扩展主题文件后重新打开或再次选中即可生效。
 type themePicker struct {
 	open  bool
 	list  listModel
@@ -24,7 +24,7 @@ func themePickerHeight(screenHeight int) int {
 	return max(3, min(themePickerMaxRows, screenHeight-6))
 }
 
-// openThemePicker 扫描主题目录并打开选择弹窗，光标定位到当前主题。
+// openThemePicker 合并内置/扩展主题并打开选择弹窗，光标定位到当前主题。
 func (m *Model) openThemePicker() {
 	names, err := ListThemes(m.dirs.Config)
 	if err != nil {

@@ -1,0 +1,25 @@
+{
+  "colors": {
+    "background": "#000000",
+    "foreground": "#d8d3c8",
+    "muted": "#8a8172",
+    "faint": "#45403a",
+    "accent": "#e0a458",
+    "accent2": "#cd7f6a",
+    "error": "#d1695c"
+  },
+  "glyphs": {
+    "cursor": "▌ ",
+    "playing": "▶ ",
+    "paused": "⏸ ",
+    "playlist_created": "✎",
+    "playlist_starred": "♥",
+    "popup_header_rule": "─",
+    "progress_fill": "█",
+    "progress_head": "",
+    "progress_empty": "░",
+    "rule": "─",
+    "header_mark": "▞"
+  },
+  "border": "rounded"
+}

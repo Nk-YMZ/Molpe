@@ -35,7 +35,7 @@ type Config struct {
 	LyricGapAbove *int `json:"lyric_gap_above,omitempty"`
 	// LyricGapBelow 歌词区与下方进度条之间的空行数；null、<0 或 >5 时使用默认值 1。
 	LyricGapBelow *int `json:"lyric_gap_below,omitempty"`
-	// Theme 主题名（对应 themes/<name>.json）；空使用默认主题。
+	// Theme 主题名；内置 default/ember，其他名称对应扩展目录 themes/<name>.json；空使用默认主题。
 	Theme string `json:"theme,omitempty"`
 }
 
@@ -178,7 +178,7 @@ func newConfigFileData(cfg Config) configFileData {
 			LyricLines:       "歌词区域显示的总行数；整数，范围：1-15",
 			LyricGapAbove:    "歌词区域与上方正文区域之间的空行数；整数，范围：0-5",
 			LyricGapBelow:    "歌词区域与下方进度条之间的空行数；整数，范围：0-5",
-			Theme:            "主题名称，对应 themes/<名称>.json；字符串，例如：default、ember",
+			Theme:            "主题名称；内置值：default、ember；其他字符串对应扩展目录 themes/<名称>.json",
 		},
 		Quality:          cfg.Quality,
 		AutoPlay:         cfg.AutoPlay,
