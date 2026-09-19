@@ -50,10 +50,11 @@ type Service struct {
 
 	positionFn func() (float64, error) // 返回播放位置（秒）
 
-	mu       sync.Mutex
-	status   string
-	volume   float64 // 0.0-1.0
-	metadata map[string]dbus.Variant
+	mu        sync.Mutex
+	status    string
+	volume    float64 // 0.0-1.0
+	metadata  map[string]dbus.Variant
+	closeOnce sync.Once
 }
 
 // New 连接会话总线并注册 MPRIS 接口。positionFn 用于应答 Position 属性查询。
@@ -108,16 +109,17 @@ func New(positionFn func() (float64, error)) (*Service, error) {
 	return s, nil
 }
 
-// Events 返回桌面控制事件通道；服务关闭后通道关闭。
+// Events 返回桌面控制事件通道；通道不会主动关闭，服务随进程退出回收。
 func (s *Service) Events() <-chan Event { return s.events }
 
-// Close 释放总线名称并断开连接。
+// Close 释放总线名称并断开连接；可重复调用。
+// 事件通道保持打开：进程退出即回收，避免与尚在执行的 D-Bus 回调产生
+// “send on closed channel” 竞态。
 func (s *Service) Close() {
-	if _, err := s.conn.ReleaseName(busName); err != nil {
-		_ = err
-	}
-	s.conn.Close()
-	close(s.events)
+	s.closeOnce.Do(func() {
+		_, _ = s.conn.ReleaseName(busName)
+		s.conn.Close()
+	})
 }
 
 func emptyMetadata() map[string]dbus.Variant {

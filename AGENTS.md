@@ -109,7 +109,7 @@ internal/ui/         Bubble Tea TUI：根模型 + 登录/歌单/歌曲页、主�
 - 快捷键集中在 `internal/ui` 的 `defaultKeyMap()`（Model.keys 字段），
   为后续配置文件自定义预留；状态栏操作提示约 3 秒后自动恢复为播放信息
 - 配置项（`config.json`）：`quality` 音质、`auto_play` 启动自动开播（默认 false，恢复为待播）、
-  `volume` 音量（0-100，缺省 100，调整即固化回配置文件）、`volume_step` 调节步进（默认 5）
+  `volume` 音量（0-100，缺省 100，退出时统一固化回配置文件，运行期间不写盘）、`volume_step` 调节步进（默认 5）
 - 队列核心在 `internal/queue`（纯逻辑、可单测，不依赖网络与外部进程）：
   - 顺序/列表循环/随机三种模式；随机为除当前曲外在歌单内等概率选取（不做预打乱），
     单曲歌单重复播放

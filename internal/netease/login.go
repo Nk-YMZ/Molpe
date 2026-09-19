@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/go-musicfox/netease-music/service"
 	"github.com/go-musicfox/netease-music/util"
@@ -28,6 +29,7 @@ const qrLoginUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleW
 var qrKeyClient = req.C().
 	SetUserAgent(qrLoginUserAgent).
 	SetCookieJar(nil).
+	SetTimeout(15 * time.Second).
 	SetTLSFingerprintChrome()
 
 // qrCheckClient 绑定当前会话 Jar，轮询二维码状态（登录 Cookie 需写入 Jar）。
@@ -35,6 +37,7 @@ func qrCheckClient(jar http.CookieJar) *req.Client {
 	return req.C().
 		SetUserAgent(qrLoginUserAgent).
 		SetCookieJar(jar).
+		SetTimeout(15 * time.Second).
 		SetTLSFingerprintChrome()
 }
 

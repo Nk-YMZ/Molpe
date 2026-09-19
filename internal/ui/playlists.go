@@ -29,8 +29,9 @@ type playlistsFetchedMsg struct {
 }
 
 type songsFetchedMsg struct {
-	songs []netease.Song
-	err   error
+	playlistID int64 // 请求的目标歌单，用于丢弃过期响应
+	songs      []netease.Song
+	err        error
 }
 
 func fetchPlaylistsCmd(c *netease.Client, uid int64) tea.Cmd {
@@ -43,6 +44,6 @@ func fetchPlaylistsCmd(c *netease.Client, uid int64) tea.Cmd {
 func fetchSongsCmd(c *netease.Client, playlistID int64) tea.Cmd {
 	return func() tea.Msg {
 		songs, err := c.PlaylistSongs(playlistID)
-		return songsFetchedMsg{songs: songs, err: err}
+		return songsFetchedMsg{playlistID: playlistID, songs: songs, err: err}
 	}
 }

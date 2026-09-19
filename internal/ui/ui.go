@@ -111,6 +111,9 @@ type Model struct {
 	client *netease.Client
 	cfg    config.Config
 	dirs   config.Dirs
+	// cfgWritable 为 false 表示启动时配置加载失败（按默认配置运行），
+	// 退出时不写回，保留原文件供用户手动修复。
+	cfgWritable bool
 
 	quality string // cfg.Quality 归一化后的音质
 	volume  int    // 当前音量百分比（0-100）
@@ -132,6 +135,7 @@ type Model struct {
 	mprisErr error
 	playing  *playingInfo
 	paused   bool
+	playSeq  int    // 播放地址请求序号，用于丢弃过期响应
 	errNote  string // 状态栏错误提示
 	note     string // 状态栏普通提示（如队列操作反馈），到期自动清除
 	noteID   int    // 提示序号，防止过期定时器误清更新的提示
@@ -139,27 +143,36 @@ type Model struct {
 	help   help.Model
 	width  int
 	height int
+
+	cleanupOnce *sync.Once // 保证退出清理只执行一次
 }
 
-// New 创建根模型。dirs 为配置/数据/缓存目录。
-func New(client *netease.Client, cfg config.Config, dirs config.Dirs) Model {
+// New 创建根模型。dirs 为配置/数据/缓存目录；
+// cfgErr 非空表示配置加载失败，将以默认配置运行并在状态栏提示。
+func New(client *netease.Client, cfg config.Config, dirs config.Dirs, cfgErr error) Model {
 	theme := DefaultTheme()
 	h := help.New()
 	h.Styles = help.DefaultStyles(true)
 	m := Model{
-		client:  client,
-		cfg:     cfg,
-		dirs:    dirs,
-		quality: netease.NormalizeQuality(cfg.Quality),
-		volume:  cfg.EffectiveVolume(),
-		theme:   theme,
-		sty:     newStyles(theme),
-		keys:    defaultKeyMap(),
-		login:   newLoginModel(client),
-		player:  &playerHolder{},
-		queue:   queue.New(nil, queue.ModeLoop, queue.Options{}),
-		endCh:   make(chan struct{}, 1),
-		help:    h,
+		client:      client,
+		cfg:         cfg,
+		dirs:        dirs,
+		cfgWritable: cfgErr == nil,
+		quality:     netease.NormalizeQuality(cfg.Quality),
+		volume:      cfg.EffectiveVolume(),
+		theme:       theme,
+		sty:         newStyles(theme),
+		keys:        defaultKeyMap(),
+		login:       newLoginModel(client),
+		player:      &playerHolder{},
+		queue:       queue.New(nil, queue.ModeLoop, queue.Options{}),
+		endCh:       make(chan struct{}, 1),
+		help:        h,
+
+		cleanupOnce: &sync.Once{},
+	}
+	if cfgErr != nil {
+		m.errNote = "配置文件有误，已按默认配置运行：" + cfgErr.Error()
 	}
 	// MPRIS 不可用时仅记录，不影响主体功能。
 	m.mpris, m.mprisErr = mpris.New(m.player.position)
@@ -240,7 +253,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds := []tea.Cmd{m.fetchPlaylists()}
 			// 配置开启自动开播时，继续播放上次退出时的歌曲。
 			if m.cfg.AutoPlay && m.playing != nil {
-				cmds = append(cmds, fetchSongURLCmd(m.client, m.playing.song, m.quality))
+				cmds = append(cmds, m.playCmd(m.playing.song))
 			}
 			return m, tea.Batch(cmds...)
 		}
@@ -260,6 +273,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case songsFetchedMsg:
+		// 过期响应（快速切换歌单时先发出的慢请求）直接丢弃。
+		if msg.playlistID != m.songs.playlist.ID {
+			return m, nil
+		}
 		m.songs.loading = false
 		m.songs.err = msg.err
 		if msg.err == nil {
@@ -285,7 +302,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, listenEndCmd(m.endCh)
 		}
 		m.saveQueue()
-		return m, tea.Batch(fetchSongURLCmd(m.client, song, m.quality), listenEndCmd(m.endCh))
+		return m, tea.Batch(m.playCmd(song), listenEndCmd(m.endCh))
 	case mprisEventMsg:
 		return m.handleMprisEvent(mpris.Event(msg))
 	}
@@ -382,7 +399,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.queue.SetPlaylist(m.songs.data)
 			m.queue.Play(song)
 			m.saveQueue()
-			return m, fetchSongURLCmd(m.client, song, m.quality)
+			return m, m.playCmd(song)
 		case key.Matches(msg, m.keys.PlayNext):
 			i := m.songs.list.Selected()
 			if i < 0 || i >= len(m.songs.data) {
@@ -420,7 +437,7 @@ func (m Model) nextSong() (tea.Model, tea.Cmd) {
 		return m, m.setNote("没有可播放的下一首")
 	}
 	m.saveQueue()
-	return m, fetchSongURLCmd(m.client, song, m.quality)
+	return m, m.playCmd(song)
 }
 
 // prevSong 沿历史队列回退一首。
@@ -430,7 +447,7 @@ func (m Model) prevSong() (tea.Model, tea.Cmd) {
 		return m, m.setNote("没有更早的播放记录")
 	}
 	m.saveQueue()
-	return m, fetchSongURLCmd(m.client, song, m.quality)
+	return m, m.playCmd(song)
 }
 
 // cycleMode 在顺序播放 → 列表循环 → 随机播放之间切换。
@@ -448,7 +465,8 @@ func (m *Model) cycleMode() tea.Cmd {
 	return nil
 }
 
-// adjustVolume 按步进调整音量（0-100），应用到播放器与桌面环境并持久化到配置文件。
+// adjustVolume 按步进调整音量（0-100），应用到播放器与桌面环境；
+// 配置统一在退出时落盘，运行期间不写盘。
 func (m *Model) adjustVolume(delta int) tea.Cmd {
 	v := max(0, min(100, m.volume+delta))
 	if v == m.volume {
@@ -456,7 +474,6 @@ func (m *Model) adjustVolume(delta int) tea.Cmd {
 	}
 	m.volume = v
 	m.cfg.Volume = &v
-	m.saveConfig()
 	if p, err := m.player.get(); err == nil {
 		if err := p.SetVolume(v); err != nil {
 			m.errNote = err.Error()
@@ -465,12 +482,17 @@ func (m *Model) adjustVolume(delta int) tea.Cmd {
 	if m.mpris != nil {
 		m.mpris.SetVolume(float64(v) / 100)
 	}
-	// 音量已实时反映在状态栏播放信息中，无需额外提示。
+	// 音量已实时反映在状态栏播放信息中，无需额外提示；
+	// 配置统一在退出时落盘（shutdown）。
 	return nil
 }
 
-// saveConfig 将当前配置写回配置文件。
+// saveConfig 将当前配置写回配置文件；启动时配置加载失败则不写回，
+// 避免覆盖用户待手动修复的文件。
 func (m *Model) saveConfig() {
+	if !m.cfgWritable {
+		return
+	}
 	if err := config.SaveConfig(m.dirs.Config, m.cfg); err != nil {
 		m.errNote = "保存配置失败：" + err.Error()
 	}
@@ -482,7 +504,7 @@ func (m Model) toggleOrResume() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if _, err := m.player.get(); err != nil {
-		return m, fetchSongURLCmd(m.client, m.playing.song, m.quality)
+		return m, m.playCmd(m.playing.song)
 	}
 	m.setPaused(!m.paused)
 	return m, nil
@@ -501,7 +523,11 @@ func modeLabel(mode queue.Mode) string {
 }
 
 // handleSongURL 处理播放地址获取结果：启动播放器（如需要）并播放。
+// 过期响应（快速连续切歌时先发出的慢请求）直接丢弃。
 func (m Model) handleSongURL(msg songURLFetchedMsg) (tea.Model, tea.Cmd) {
+	if msg.seq != m.playSeq {
+		return m, nil
+	}
 	if msg.err != nil {
 		m.errNote = msg.err.Error()
 		return m, nil
@@ -586,7 +612,7 @@ func (m Model) handleMprisEvent(ev mpris.Event) (Model, tea.Cmd) {
 		if m.playing != nil {
 			if _, err := m.player.get(); err != nil {
 				// 待播状态下尚未启动播放器，直接拉取地址开始播放
-				return m, tea.Batch(fetchSongURLCmd(m.client, m.playing.song, m.quality), listen)
+				return m, tea.Batch(m.playCmd(m.playing.song), listen)
 			}
 			m.setPaused(false)
 		}
@@ -604,15 +630,21 @@ func (m Model) handleMprisEvent(ev mpris.Event) (Model, tea.Cmd) {
 	return m, listen
 }
 
-// shutdown 释放播放器与 MPRIS 资源。
+// shutdown 释放播放器与 MPRIS 资源，并把待保存的配置落盘；可重复调用。
 func (m *Model) shutdown() {
-	if p, err := m.player.get(); err == nil {
-		p.Close()
-	}
-	if m.mpris != nil {
-		m.mpris.Close()
-	}
+	m.cleanupOnce.Do(func() {
+		m.saveConfig()
+		if p, err := m.player.get(); err == nil {
+			p.Close()
+		}
+		if m.mpris != nil {
+			m.mpris.Close()
+		}
+	})
 }
+
+// Cleanup 供 main 在程序退出后（含 SIGTERM、运行错误等不经按键的路径）兜底清理。
+func (m Model) Cleanup() { m.shutdown() }
 
 // listHeight 计算列表可见行数；extra 为页面内额外占用的行数。
 func (m Model) listHeight(extra int) int {

@@ -18,6 +18,7 @@ import (
 type Player struct {
 	cmd    *exec.Cmd
 	socket string
+	exited chan struct{} // mpv 进程退出时关闭
 
 	mu         sync.Mutex
 	closed     bool
@@ -44,7 +45,11 @@ func Start() (*Player, error) {
 		return nil, fmt.Errorf("启动 mpv 失败: %w", err)
 	}
 
-	p := &Player{cmd: cmd, socket: socket}
+	p := &Player{cmd: cmd, socket: socket, exited: make(chan struct{})}
+	go func() {
+		_ = p.cmd.Wait()
+		close(p.exited)
+	}()
 	if err := p.waitSocket(3 * time.Second); err != nil {
 		p.Close()
 		return nil, err
@@ -52,16 +57,23 @@ func Start() (*Player, error) {
 	return p, nil
 }
 
+// waitSocket 轮询等待 IPC socket 出现；mpv 提前退出时立即失败，避免白等满超时。
 func (p *Player) waitSocket(timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	tick := time.NewTicker(20 * time.Millisecond)
+	defer tick.Stop()
 	for {
 		if _, err := os.Stat(p.socket); err == nil {
 			return nil
 		}
-		if time.Now().After(deadline) {
+		select {
+		case <-p.exited:
+			return errors.New("mpv 进程在 IPC socket 就绪前退出")
+		case <-timer.C:
 			return errors.New("等待 mpv IPC socket 就绪超时")
+		case <-tick.C:
 		}
-		time.Sleep(20 * time.Millisecond)
 	}
 }
 
@@ -193,16 +205,11 @@ func (p *Player) Close() {
 	p.closed = true
 	p.mu.Unlock()
 
-	done := make(chan struct{})
-	go func() {
-		_ = p.cmd.Wait()
-		close(done)
-	}()
 	select {
-	case <-done:
+	case <-p.exited:
 	case <-time.After(2 * time.Second):
 		_ = p.cmd.Process.Kill()
-		<-done
+		<-p.exited
 	}
 	_ = os.Remove(p.socket)
 }

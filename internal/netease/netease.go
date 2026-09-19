@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/go-musicfox/netease-music/util"
 	"github.com/telanflow/cookiejar"
@@ -20,6 +21,9 @@ type Client struct {
 // NewClient 创建客户端，Cookie 持久化到 cookieFile，
 // 并注册为 netease-music 的全局 Jar，后续所有接口请求共用该会话。
 func NewClient(cookieFile string) (*Client, error) {
+	// netease-music 的请求默认无超时，弱网/网络异常时会永久悬挂，
+	// 这里统一设置上限，卡住的操作最终会以错误形式回到界面。
+	util.HTTPClientTimeout = 15 * time.Second
 	if err := os.MkdirAll(filepath.Dir(cookieFile), 0o700); err != nil {
 		return nil, fmt.Errorf("创建数据目录失败: %w", err)
 	}
