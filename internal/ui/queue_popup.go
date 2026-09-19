@@ -229,6 +229,7 @@ func (m Model) deletePopupRow() (tea.Model, tea.Cmd) {
 		p.cursor = d
 		p.normalizeCursor(1)
 		p.ensureVisible()
+		m.paused = false // 删除当前曲即切歌，暂停状态随之解除
 		return m, m.playCmd(song)
 	}
 

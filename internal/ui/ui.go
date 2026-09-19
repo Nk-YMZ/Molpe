@@ -145,6 +145,12 @@ type Model struct {
 	note     string // 状态栏普通提示（如队列操作反馈），到期自动清除
 	noteID   int    // 提示序号，防止过期定时器误清更新的提示
 
+	lyrics       []netease.LyricLine // 当前曲目歌词（按时间排序）
+	lyricCur     int                 // 当前歌词行下标，-1 表示尚未到第一句
+	lyricLines   int                 // 歌词显示总行数（配置 lyric_lines）
+	lyricTicking bool                // 歌词滚动定时器是否在运行
+	lyricSeq     int                 // 定时器序号，用于丢弃暂停/切歌后残留的过期定时器
+
 	help   help.Model
 	width  int
 	height int
@@ -165,6 +171,7 @@ func New(client *netease.Client, cfg config.Config, dirs config.Dirs, cfgErr err
 		cfgWritable: cfgErr == nil,
 		quality:     netease.NormalizeQuality(cfg.Quality),
 		volume:      cfg.EffectiveVolume(),
+		lyricLines:  cfg.EffectiveLyricLines(),
 		theme:       theme,
 		sty:         newStyles(theme),
 		keys:        defaultKeyMap(),
@@ -296,6 +303,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case songURLFetchedMsg:
 		return m.handleSongURL(msg)
+	case lyricsFetchedMsg:
+		return m.handleLyricsFetched(msg)
+	case lyricTickMsg:
+		if msg.seq != m.lyricSeq {
+			return m, nil // 过期定时器（暂停/切歌后残留）
+		}
+		m.lyricTicking = false
+		if m.playing == nil {
+			return m, nil
+		}
+		return m, m.scheduleLyricTick()
 	case noteExpiredMsg:
 		if msg.id == m.noteID {
 			m.note = ""
@@ -418,8 +436,10 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			song := m.songs.data[i]
 			// 手动点歌：更新歌单队列并记录历史；下一首播放队列保留。
+			// 点歌是明确的播放意图，解除暂停状态（mpv 的 pause 属性跨 loadfile 保持）。
 			m.queue.SetPlaylist(m.songs.data)
 			m.queue.Play(song)
+			m.paused = false
 			m.saveQueue()
 			return m, m.playCmd(song)
 		case key.Matches(msg, m.keys.PlayNext):
@@ -453,21 +473,25 @@ func (m *Model) setNote(s string) tea.Cmd {
 }
 
 // nextSong 播放队列中的下一首（历史前进 → 下一首队列 → 播放模式）。
+// 切歌是明确的播放意图，暂停状态也随之解除。
 func (m Model) nextSong() (tea.Model, tea.Cmd) {
 	song, ok := m.queue.Next()
 	if !ok {
 		return m, m.setNote("没有可播放的下一首")
 	}
+	m.paused = false
 	m.saveQueue()
 	return m, m.playCmd(song)
 }
 
 // prevSong 沿历史队列回退一首。
+// prevSong 沿历史队列回退一首；暂停状态随之解除。
 func (m Model) prevSong() (tea.Model, tea.Cmd) {
 	song, ok := m.queue.Prev()
 	if !ok {
 		return m, m.setNote("没有更早的播放记录")
 	}
+	m.paused = false
 	m.saveQueue()
 	return m, m.playCmd(song)
 }
@@ -530,8 +554,7 @@ func (m Model) toggleOrResume() (tea.Model, tea.Cmd) {
 		m.paused = false
 		return m, m.playCmd(m.playing.song)
 	}
-	m.setPaused(!m.paused)
-	return m, nil
+	return m, m.setPaused(!m.paused)
 }
 
 func modeLabel(mode queue.Mode) string {
@@ -578,33 +601,42 @@ func (m Model) handleSongURL(msg songURLFetchedMsg) (tea.Model, tea.Cmd) {
 		m.errNote = err.Error()
 		return m, nil
 	}
-	// 保留暂停状态：暂停中切歌（含弹窗删除当前曲）时新曲目加载后仍处于暂停；
-	// 待播状态的开始播放由入口在发起 playCmd 前自行解除 m.paused。
-	if m.paused {
-		if err := p.SetPause(true); err != nil {
-			m.errNote = err.Error()
-		}
+	// mpv 的 pause 属性跨 loadfile 保持，这里无条件把 UI 的暂停状态
+	// 同步给 mpv：暂停中切歌后新曲目仍为暂停，明确开播（点歌/待播恢复/
+	// 自动开播）时解除上一首遗留的暂停。
+	if err := p.SetPause(m.paused); err != nil {
+		m.errNote = err.Error()
 	}
 	m.playing = &playingInfo{song: msg.song, level: msg.url.Level}
 	m.errNote = ""
 	m.note = ""
+	// 切歌后重置歌词并异步拉取新歌词；旧曲目的滚动定时器随之失效。
+	m.lyrics = nil
+	m.lyricCur = -1
+	m.lyricTicking = false
+	m.lyricSeq++
 	m.publishState()
 	m.refreshQueuePopup()
-	return m, nil
+	return m, m.fetchLyricsCmd(msg.song.ID)
 }
 
-// setPaused 切换暂停状态并同步桌面环境。
-func (m *Model) setPaused(paused bool) {
+// setPaused 切换暂停状态并同步桌面环境；恢复播放时重启歌词滚动定时器
+// （暂停期间歌词不滚动，定时器到期后自动停止）。
+func (m *Model) setPaused(paused bool) tea.Cmd {
 	p, err := m.player.get()
 	if err != nil {
-		return
+		return nil
 	}
 	if err := p.SetPause(paused); err != nil {
 		m.errNote = err.Error()
-		return
+		return nil
 	}
 	m.paused = paused
 	m.publishState()
+	if paused {
+		return nil
+	}
+	return m.scheduleLyricTick()
 }
 
 // publishState 向 MPRIS 推送当前曲目元数据与播放状态。
@@ -646,11 +678,11 @@ func (m Model) handleMprisEvent(ev mpris.Event) (Model, tea.Cmd) {
 				m.paused = false
 				return m, tea.Batch(m.playCmd(m.playing.song), listen)
 			}
-			m.setPaused(false)
+			return m, tea.Batch(m.setPaused(false), listen)
 		}
 	case mpris.EventPause, mpris.EventStop:
 		if m.playing != nil {
-			m.setPaused(true)
+			return m, tea.Batch(m.setPaused(true), listen)
 		}
 	case mpris.EventNext:
 		nm, cmd := m.nextSong()
@@ -679,8 +711,9 @@ func (m *Model) shutdown() {
 func (m Model) Cleanup() { m.shutdown() }
 
 // listHeight 计算列表可见行数；extra 为页面内额外占用的行数。
+// 歌词区固定占用 lyricLines 行，同样从可用高度中扣除。
 func (m Model) listHeight(extra int) int {
-	h := m.height - 5 - extra
+	h := m.height - 5 - m.lyricLines - extra
 	if h < 1 {
 		return 1
 	}
@@ -722,7 +755,7 @@ func (m Model) viewContent() string {
 	}
 
 	header := m.sty.Title.Render("木末 Molpe")
-	return lipgloss.JoinVertical(lipgloss.Left, header, "", body, "", m.statusView(), m.help.View(m))
+	return lipgloss.JoinVertical(lipgloss.Left, header, "", body, "", m.lyricsView(), m.statusView(), m.help.View(m))
 }
 
 // statusView 渲染状态栏：常驻播放信息，操作提示追加其后（到期自动消失）；

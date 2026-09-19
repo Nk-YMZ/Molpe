@@ -25,11 +25,17 @@ type Config struct {
 	Volume *int `json:"volume,omitempty"`
 	// VolumeStep 音量调节步进百分比；<=0 或 >100 时使用默认值 5。
 	VolumeStep int `json:"volume_step,omitempty"`
+	// LyricTranslation 歌词是否包含翻译；缺失时默认 true。
+	LyricTranslation *bool `json:"lyric_translation,omitempty"`
+	// LyricLines 歌词显示总行数；<1 或 >15 时使用默认值 5。
+	LyricLines int `json:"lyric_lines,omitempty"`
 }
 
 const (
 	defaultVolume     = 100
 	defaultVolumeStep = 5
+	defaultLyricLines = 5
+	maxLyricLines     = 15
 )
 
 // DefaultConfig 返回默认配置。
@@ -51,6 +57,22 @@ func (c Config) EffectiveVolumeStep() int {
 		return defaultVolumeStep
 	}
 	return c.VolumeStep
+}
+
+// EffectiveLyricTranslation 返回歌词是否包含翻译。
+func (c Config) EffectiveLyricTranslation() bool {
+	if c.LyricTranslation == nil {
+		return true
+	}
+	return *c.LyricTranslation
+}
+
+// EffectiveLyricLines 返回生效的歌词显示总行数。
+func (c Config) EffectiveLyricLines() int {
+	if c.LyricLines < 1 || c.LyricLines > maxLyricLines {
+		return defaultLyricLines
+	}
+	return c.LyricLines
 }
 
 // LoadConfig 从 dir 下的 config.json 读取配置；文件不存在时写入并返回默认配置。

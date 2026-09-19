@@ -105,11 +105,27 @@ internal/ui/         Bubble Tea TUI：根模型 + 登录/歌单/歌曲页、主�
 
 - 歌曲页 enter 播放，space 播放/暂停；]/[ 下一首/上一首；n 加入“下一首播放”队列；
   m 在顺序/列表循环/随机间切换；+/- 调整音量；b/esc 返回；
-  底部状态栏显示当前曲目、音质、播放模式、音量与待播数量
+  底部状态栏显示当前曲目（含歌单内位置 `(X/Y)`）、音质、播放模式、音量与待播数量
+- l 打开播放队列弹窗（`internal/ui/queue_popup.go`）：历史记录/正在播放/下一首播放/
+  歌单后续分区展示，当前曲目锚定窗口中央，限高滚动；delete/Ctrl+d 删除选中条目
+  （删除当前曲自动跳转下一首），l/b/esc 关闭；随机模式不显示歌单后续
+- 切歌（点歌/上一首/下一首/弹窗删除当前曲）一律解除暂停自动开播；
+  `handleSongURL` 无条件将暂停状态同步给 mpv（其 pause 属性跨 loadfile 保持，不重置）
+
+歌词显示已实现（`internal/ui/lyrics.go`、`internal/netease/lyrics.go`）：
+
+- 歌词区固定在正文与状态栏之间，全局常驻；当前句居中高亮，上下各半，开头结尾留空；
+  第一句未开始（前奏）时按第一句居中排版但不高亮，避免整区位置跳变
+- 歌词走 `LyricService`（linuxapi），返回 LRC 文本（每句带 `[mm:ss.xx]` 时间戳），
+  翻译按相同时间戳并入原文行；`parseLRC`/`mergeTranslation`/`lyricLineAt` 为纯函数，附单测
+- 滚动采用按需定时（`scheduleLyricTick`）：在下一句歌词到来时刻唤醒一次并重新校位，
+  暂停、无歌词、最后一句后完全停止；定时器带序号（lyricSeq）防止暂停/切歌后残留过期定时器
+- 切歌清空歌词并异步拉取（按歌曲 ID 丢弃过期响应）；列表高度扣除歌词区行数
 - 快捷键集中在 `internal/ui` 的 `defaultKeyMap()`（Model.keys 字段），
   为后续配置文件自定义预留；状态栏操作提示约 3 秒后自动恢复为播放信息
 - 配置项（`config.json`）：`quality` 音质、`auto_play` 启动自动开播（默认 false，恢复为待播）、
-  `volume` 音量（0-100，缺省 100，退出时统一固化回配置文件，运行期间不写盘）、`volume_step` 调节步进（默认 5）
+  `volume` 音量（0-100，缺省 100，退出时统一固化回配置文件，运行期间不写盘）、`volume_step` 调节步进（默认 5）、
+  `lyric_translation` 歌词是否含翻译（默认 true）、`lyric_lines` 歌词显示总行数（默认 5，范围 1-15）
 - 队列核心在 `internal/queue`（纯逻辑、可单测，不依赖网络与外部进程）：
   - 顺序/列表循环/随机三种模式；随机为除当前曲外在歌单内等概率选取（不做预打乱），
     单曲歌单重复播放
@@ -119,6 +135,11 @@ internal/ui/         Bubble Tea TUI：根模型 + 登录/歌单/歌曲页、主�
   - 行为参数集中在 `queue.Options`（如 HistoryLimit），为配置化预留
   - 队列快照（歌单/历史/位置/下一首队列/模式）持久化到 `$XDG_DATA_HOME/molpe/queue.json`，
     每次变动即写入；启动时恢复，上次播放的歌曲恢复为待播（暂停）状态，按 space 或桌面播放键开始
+  - 支持从历史/下一首队列/歌单删除条目（RemoveHistory/RemoveNextUp/RemovePlaylist/RemoveCurrent）；
+    当前曲为显式字段（持有副本），RemoveCurrent 保留歌单位置锚点以保证 Next 从原位置之后继续
+- 健壮性：网易云请求统一 15s 超时；播放地址请求带递增序号、歌单响应带歌单 ID，过期响应丢弃；
+  main 层对 SIGTERM 等非按键退出兜底清理 mpv/D-Bus；配置文件损坏时以默认配置运行并提示，
+  且该次运行退出不写回
 - mpv 通过独立 IPC 长连接监听 `end-file`（仅 reason=eof）实现自然播完自动连播
 - 播放地址走 EAPI（官方客户端通道）：WEAPI 试听接口对会员歌曲的 Hi-Res
   会错误标注甚至混发文件，EAPI 的等级与文件均与实际一致
