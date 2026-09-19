@@ -2,11 +2,9 @@ package ui
 
 import (
 	"sort"
-	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/x/ansi"
 
 	"molpe/internal/netease"
 )
@@ -93,32 +91,4 @@ func (m *Model) updateLyricLine() {
 // lyricLineAt 返回 pos 秒处应高亮的歌词行下标；pos 早于第一句时为 -1。
 func lyricLineAt(lines []netease.LyricLine, pos float64) int {
 	return sort.Search(len(lines), func(i int) bool { return lines[i].Time > pos }) - 1
-}
-
-// lyricsView 渲染滚动歌词区：固定 lyricLines 行，当前句居中高亮，
-// 上下各占一半，歌曲开头结尾不足时留空；无歌词时整区留空。
-// 第一句尚未开始（间奏/前奏）时按第一句居中排版但不高亮，
-// 避免第一句到来时整区位置上跳（闪烁）。
-func (m Model) lyricsView() string {
-	n := m.lyricLines
-	center := n / 2              // 当前句所在行（从 0 计）
-	anchor := max(0, m.lyricCur) // 排版锚点：-1 时视为第一句
-	lines := make([]string, 0, n)
-	for i := 0; i < n; i++ {
-		idx := i - center + anchor
-		if idx < 0 || idx >= len(m.lyrics) {
-			lines = append(lines, "")
-			continue
-		}
-		text := m.lyrics[idx].Text
-		if m.width > 0 {
-			text = ansi.Truncate(text, m.width, "")
-		}
-		if idx == m.lyricCur {
-			lines = append(lines, m.sty.Status.Render(text))
-		} else {
-			lines = append(lines, m.sty.Muted.Render(text))
-		}
-	}
-	return strings.Join(lines, "\n")
 }

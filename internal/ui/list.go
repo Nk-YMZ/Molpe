@@ -1,9 +1,5 @@
 package ui
 
-import (
-	"strings"
-)
-
 // listModel 是纯键盘操作的简单滚动列表。
 type listModel struct {
 	items  []string
@@ -49,6 +45,12 @@ func (l *listModel) GoBottom() {
 	l.clamp()
 }
 
+// SetCursor 将光标定位到指定下标（越界时收拢到边界）。
+func (l *listModel) SetCursor(i int) {
+	l.cursor = i
+	l.clamp()
+}
+
 func (l *listModel) clamp() {
 	if n := len(l.items); n == 0 {
 		l.cursor, l.offset = 0, 0
@@ -71,27 +73,4 @@ func (l *listModel) clamp() {
 	if l.cursor >= l.offset+l.height {
 		l.offset = l.cursor - l.height + 1
 	}
-}
-
-func (l listModel) View(sty styles) string {
-	if len(l.items) == 0 {
-		return sty.Muted.Render("（空）")
-	}
-	end := len(l.items)
-	if l.height > 0 && l.offset+l.height < end {
-		end = l.offset + l.height
-	}
-
-	var b strings.Builder
-	for i := l.offset; i < end; i++ {
-		line, style := "  "+l.items[i], sty.Item
-		if i == l.cursor {
-			line, style = "▸ "+l.items[i], sty.Selected
-		}
-		if i > l.offset {
-			b.WriteByte('\n')
-		}
-		b.WriteString(style.Render(line))
-	}
-	return b.String()
 }

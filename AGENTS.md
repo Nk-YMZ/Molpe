@@ -35,8 +35,21 @@ internal/mpris/      MPRIS2 D-Bus 服务：向桌面环境暴露元数据/状态
 internal/ui/         Bubble Tea TUI：根模型 + 登录/歌单/歌曲页、主题、通用列表组件
 ```
 
-界面约定：纯键盘操作（不为鼠标做额外设计）；默认主题为纯黑背景（#000000），
-配色集中在 `internal/ui/theme.go`，通过 Theme 结构预留多主题扩展。
+界面约定：纯键盘操作（不为鼠标做额外设计）；默认主题为纯黑背景（#000000）。
+
+UI 分层约定（交互/渲染解耦）：
+
+- 交互层（`ui.go`、`list.go`、`lyrics.go`、`queue_popup.go`、`login.go`、`theme_picker.go` 等）
+  禁止使用 lipgloss，只维护状态与响应消息；`View()` 前先将 Model 收敛为纯数据快照
+  `viewState`（`view.go`），列表项等切片直接引用不拷贝
+- 渲染层（`theme.go`、`view.go`）是唯一允许 import lipgloss 的地方；`renderXxx` 为纯函数，
+  只消费快照与 styles，不接触 netease/queue 等内部类型
+- 主题文件（`$XDG_CONFIG_HOME/molpe/themes/*.json`）只能改配色（colors）与符号（glyphs），
+  不能改布局、尺寸、动效或新增装饰元素；布局由代码固定，歌词行数等数值统一在 config.json
+- 主题与默认值逐字段合并（只需写出想覆盖的字段），缺失/损坏回退默认主题并提示；
+  按 `t` 打开主题选择弹窗（打开时重新扫描目录，重新选中即热重载），主题名随 config 落盘
+- 新功能的扩展路径：新 msg + Update 分支（交互）→ viewState 加字段（快照）→
+  renderXxx + 需要时 Theme 加 token（渲染）
 
 模块名为 `molpe`，远程仓库 `git@github.com:Nk-YMZ/Molpe.git`（主分支 `main`）。播放队列位于 `internal/queue`，其余模块按需新增，不提前创建。
 
@@ -125,7 +138,8 @@ internal/ui/         Bubble Tea TUI：根模型 + 登录/歌单/歌曲页、主�
   为后续配置文件自定义预留；状态栏操作提示约 3 秒后自动恢复为播放信息
 - 配置项（`config.json`）：`quality` 音质、`auto_play` 启动自动开播（默认 false，恢复为待播）、
   `volume` 音量（0-100，缺省 100，退出时统一固化回配置文件，运行期间不写盘）、`volume_step` 调节步进（默认 5）、
-  `lyric_translation` 歌词是否含翻译（默认 true）、`lyric_lines` 歌词显示总行数（默认 5，范围 1-15）
+  `lyric_translation` 歌词是否含翻译（默认 true）、`lyric_lines` 歌词显示总行数（默认 5，范围 1-15）、
+  `theme` 主题名（默认 default，对应 themes/<name>.json）
 - 队列核心在 `internal/queue`（纯逻辑、可单测，不依赖网络与外部进程）：
   - 顺序/列表循环/随机三种模式；随机为除当前曲外在歌单内等概率选取（不做预打乱），
     单曲歌单重复播放

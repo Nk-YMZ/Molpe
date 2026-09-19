@@ -123,14 +123,3 @@ func (m loginModel) Update(msg tea.Msg) (loginModel, tea.Cmd) {
 	}
 	return m, nil
 }
-
-func (m loginModel) View() string {
-	var s string
-	if m.notice != "" {
-		s = m.notice + "\n\n"
-	}
-	if m.art != "" {
-		s += m.art + "\n"
-	}
-	return s + m.status
-}

@@ -29,6 +29,8 @@ type Config struct {
 	LyricTranslation *bool `json:"lyric_translation,omitempty"`
 	// LyricLines 歌词显示总行数；<1 或 >15 时使用默认值 5。
 	LyricLines int `json:"lyric_lines,omitempty"`
+	// Theme 主题名（对应 themes/<name>.json）；空使用默认主题。
+	Theme string `json:"theme,omitempty"`
 }
 
 const (

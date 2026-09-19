@@ -1,12 +1,8 @@
 package ui
 
 import (
-	"strings"
-
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/x/ansi"
 
 	"molpe/internal/netease"
 	"molpe/internal/queue"
@@ -261,46 +257,4 @@ func (m Model) deletePopupRow() (tea.Model, tea.Cmd) {
 	}
 	p.ensureVisible()
 	return m, nil
-}
-
-// renderQueuePopup 渲染弹窗并居中放置在整个屏幕上。
-func (m Model) renderQueuePopup() string {
-	p := m.popup
-	var b strings.Builder
-	b.WriteString(m.sty.Title.Render("播放队列") + "\n")
-	if len(p.rows) == 0 {
-		b.WriteString(m.sty.Muted.Render("（空）") + "\n")
-	}
-	end := min(p.offset+p.height, len(p.rows))
-	for i := p.offset; i < end; i++ {
-		row := p.rows[i]
-		if row.kind == rowHeader {
-			// 区域标题之间空一行（弹窗顶部的第一个标题除外）。
-			if i > p.offset {
-				b.WriteString("\n")
-			}
-			b.WriteString(m.sty.Muted.Render("── "+row.title+" ──") + "\n")
-			continue
-		}
-		text := ansi.Truncate(row.song.Name+" - "+row.song.Artists, queuePopupWidth-2, "")
-		marker := "  "
-		style := m.sty.Item
-		switch row.kind {
-		case rowCurrent:
-			marker = "▶ "
-		case rowHistory, rowUpcoming:
-			style = m.sty.Muted
-		}
-		if i == p.cursor {
-			style = m.sty.Selected
-		}
-		b.WriteString(style.Render(marker+text) + "\n")
-	}
-	b.WriteString(m.sty.Muted.Render("↑/↓ 移动 · del 删除 · l/b/esc 关闭"))
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(m.theme.Muted).
-		Padding(0, 1).
-		Render(b.String())
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 }

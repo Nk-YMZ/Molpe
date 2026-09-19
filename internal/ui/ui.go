@@ -10,7 +10,6 @@ import (
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 
 	"molpe/internal/config"
 	"molpe/internal/mpris"
@@ -46,6 +45,7 @@ type keyMap struct {
 	RefreshQR  key.Binding
 	Queue      key.Binding // 播放队列弹窗
 	Delete     key.Binding // 弹窗内删除选中曲目
+	Theme      key.Binding // 主题选择弹窗
 	Quit       key.Binding
 }
 
@@ -69,6 +69,7 @@ func defaultKeyMap() keyMap {
 		RefreshQR:  key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "刷新二维码")),
 		Queue:      key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "队列")),
 		Delete:     key.NewBinding(key.WithKeys("delete", "ctrl+d"), key.WithHelp("del", "删除")),
+		Theme:      key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "主题")),
 		Quit:       key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "退出")),
 	}
 }
@@ -122,16 +123,18 @@ type Model struct {
 	quality string // cfg.Quality 归一化后的音质
 	volume  int    // 当前音量百分比（0-100）
 
-	theme Theme
-	sty   styles
-	keys  keyMap
+	theme     Theme
+	themeName string // 当前主题名（对应 themes/<name>.json）
+	sty       styles
+	keys      keyMap
 
 	page      page
 	login     loginModel
 	playlists playlistsPage
 	songs     songsPage
 	account   *netease.Account
-	popup     queuePopup // 播放队列弹窗
+	popup     queuePopup  // 播放队列弹窗
+	picker    themePicker // 主题选择弹窗
 
 	player   *playerHolder
 	queue    *queue.Queue
@@ -159,11 +162,14 @@ type Model struct {
 }
 
 // New 创建根模型。dirs 为配置/数据/缓存目录；
-// cfgErr 非空表示配置加载失败，将以默认配置运行并在状态栏提示。
-func New(client *netease.Client, cfg config.Config, dirs config.Dirs, cfgErr error) Model {
-	theme := DefaultTheme()
+// cfgErr 非空表示配置加载失败，将以默认配置运行并在状态栏提示；
+// themeErr 非空表示主题加载失败，已回退默认主题。
+func New(client *netease.Client, cfg config.Config, dirs config.Dirs, theme Theme, themeName string, cfgErr, themeErr error) Model {
+	if themeName == "" {
+		themeName = defaultThemeName
+	}
 	h := help.New()
-	h.Styles = help.DefaultStyles(true)
+	h.Styles = helpStyles(theme)
 	m := Model{
 		client:      client,
 		cfg:         cfg,
@@ -173,6 +179,7 @@ func New(client *netease.Client, cfg config.Config, dirs config.Dirs, cfgErr err
 		volume:      cfg.EffectiveVolume(),
 		lyricLines:  cfg.EffectiveLyricLines(),
 		theme:       theme,
+		themeName:   themeName,
 		sty:         newStyles(theme),
 		keys:        defaultKeyMap(),
 		login:       newLoginModel(client),
@@ -185,6 +192,12 @@ func New(client *netease.Client, cfg config.Config, dirs config.Dirs, cfgErr err
 	}
 	if cfgErr != nil {
 		m.errNote = "配置文件有误，已按默认配置运行：" + cfgErr.Error()
+	}
+	if themeErr != nil {
+		if m.errNote != "" {
+			m.errNote += "；"
+		}
+		m.errNote += "主题加载失败，已使用默认主题：" + themeErr.Error()
 	}
 	// MPRIS 不可用时仅记录，不影响主体功能。
 	m.mpris, m.mprisErr = mpris.New(m.player.position)
@@ -228,12 +241,12 @@ func (m Model) ShortHelp() []key.Binding {
 		return []key.Binding{m.keys.RefreshQR, m.keys.Quit}
 	case pagePlaylists:
 		return []key.Binding{m.keys.Up, m.keys.Down, m.keys.Enter, m.keys.Next, m.keys.Prev,
-			m.keys.ModeCycle, m.keys.Queue, m.keys.VolumeUp, m.keys.Refresh, m.keys.Quit}
+			m.keys.ModeCycle, m.keys.Queue, m.keys.Theme, m.keys.VolumeUp, m.keys.Refresh, m.keys.Quit}
 	case pageSongs:
 		enter := m.keys.Enter
 		enter.SetHelp("enter", "播放")
 		return []key.Binding{m.keys.Up, m.keys.Down, enter, m.keys.Toggle, m.keys.PlayNext,
-			m.keys.Next, m.keys.Prev, m.keys.ModeCycle, m.keys.Queue, m.keys.VolumeUp, m.keys.Back, m.keys.Quit}
+			m.keys.Next, m.keys.Prev, m.keys.ModeCycle, m.keys.Queue, m.keys.Theme, m.keys.VolumeUp, m.keys.Back, m.keys.Quit}
 	default:
 		return []key.Binding{m.keys.Quit}
 	}
@@ -255,6 +268,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.popup.open {
 			m.popup.height = max(5, min(queuePopupMaxRows, m.height-6))
 			m.popup.ensureVisible()
+		}
+		if m.picker.open {
+			m.picker.list.SetHeight(themePickerHeight(m.height))
 		}
 		return m, nil
 	case tea.KeyPressMsg:
@@ -286,7 +302,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.playlists.err = msg.err
 		if msg.err == nil {
 			m.playlists.data = msg.playlists
-			m.playlists.list.SetItems(playlistItems(msg.playlists))
+			m.playlists.list.SetItems(playlistItems(msg.playlists, m.theme.Glyphs))
 		}
 		return m, nil
 	case songsFetchedMsg:
@@ -349,7 +365,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	// 弹窗打开时按键全部由弹窗处理。
+	// 弹窗打开时按键全部由弹窗处理（主题选择弹窗优先）。
+	if m.picker.open {
+		return m.updatePicker(msg)
+	}
 	if m.popup.open {
 		return m.updatePopup(msg)
 	}
@@ -378,6 +397,9 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m.prevSong()
 		case key.Matches(msg, m.keys.ModeCycle):
 			return m, m.cycleMode()
+		case key.Matches(msg, m.keys.Theme):
+			m.openThemePicker()
+			return m, nil
 		case key.Matches(msg, m.keys.VolumeUp):
 			return m, m.adjustVolume(m.cfg.EffectiveVolumeStep())
 		case key.Matches(msg, m.keys.VolumeDown):
@@ -730,94 +752,123 @@ func (m Model) fetchPlaylists() tea.Cmd {
 }
 
 func (m Model) View() tea.View {
-	content := m.viewContent()
-	if m.popup.open {
-		content = m.renderQueuePopup()
-	}
-	v := tea.NewView(content)
+	v := tea.NewView(renderRoot(m.buildViewState(), m.sty, m.help))
 	v.AltScreen = true
-	v.BackgroundColor = m.theme.Background
+	v.BackgroundColor = m.theme.BackgroundColor()
 	v.WindowTitle = "木末 Molpe"
 	return v
 }
 
-func (m Model) viewContent() string {
-	var body string
+// buildViewState 将 Model 收敛为一帧界面的纯数据快照，供渲染层消费。
+// 列表项等已有切片直接引用，不做拷贝；歌词文本逐条复制以隔离内部类型。
+func (m Model) buildViewState() viewState {
+	s := viewState{
+		width:        m.width,
+		height:       m.height,
+		lyricCur:     m.lyricCur,
+		lyricLines:   m.lyricLines,
+		helpBindings: m.ShortHelp(),
+	}
+	if len(m.lyrics) > 0 {
+		s.lyrics = make([]string, len(m.lyrics))
+		for i, l := range m.lyrics {
+			s.lyrics[i] = l.Text
+		}
+	}
+
 	switch m.page {
 	case pageChecking:
-		body = m.sty.Muted.Render("正在检查登录状态…")
+		s.body = bodyView{kind: bodyNotice, notice: "正在检查登录状态…"}
 	case pageLogin:
-		body = m.login.View()
+		s.body = bodyView{kind: bodyLogin, login: loginView{
+			art:    m.login.art,
+			status: m.login.status,
+			notice: m.login.notice,
+		}}
 	case pagePlaylists:
-		body = m.playlistsView()
+		s.body = m.playlistsBody()
 	case pageSongs:
-		body = m.songsView()
+		s.body = m.songsBody()
 	}
 
-	header := m.sty.Title.Render("木末 Molpe")
-	return lipgloss.JoinVertical(lipgloss.Left, header, "", body, "", m.lyricsView(), m.statusView(), m.help.View(m))
+	s.status = m.statusState()
+
+	if m.popup.open {
+		s.popup = m.popupState()
+	}
+	if m.picker.open {
+		l := m.picker.list
+		s.picker = &listView{items: l.items, cursor: l.cursor, offset: l.offset, height: l.height}
+	}
+	return s
 }
 
-// statusView 渲染状态栏：常驻播放信息，操作提示追加其后（到期自动消失）；
-// 仅错误提示会整行替换。
-func (m Model) statusView() string {
-	if m.errNote != "" {
-		return m.sty.Error.Render(m.errNote)
+func (m Model) playlistsBody() bodyView {
+	switch {
+	case m.playlists.loading:
+		return bodyView{kind: bodyNotice, notice: "正在加载歌单…"}
+	case m.playlists.err != nil:
+		return bodyView{kind: bodyNotice, notice: m.playlists.err.Error() + "，按 r 重试", isErr: true}
+	default:
+		l := m.playlists.list
+		return bodyView{kind: bodyList, list: listView{items: l.items, cursor: l.cursor, offset: l.offset, height: l.height}}
 	}
-	var status string
-	if m.playing == nil {
-		status = m.sty.Muted.Render("未在播放")
-	} else {
-		icon := "▶ "
-		if m.paused {
-			icon = "⏸ "
-		}
-		status = m.sty.Status.Render(icon + m.playing.song.Name + " - " + m.playing.song.Artists)
-		if pos, total, ok := m.queue.Position(); ok {
-			status += m.sty.Muted.Render(fmt.Sprintf(" (%d/%d)", pos, total))
-		}
-		status += m.sty.Muted.Render(fmt.Sprintf(" [%s] [%s] [音量 %d%%]",
-			qualityLabel(m.playing.level), modeLabel(m.queue.Mode()), m.volume))
-		if n := len(m.queue.NextUp()); n > 0 {
-			status += m.sty.Muted.Render(fmt.Sprintf(" [待播 %d]", n))
-		}
-	}
-	if m.note != "" {
-		status += m.sty.Muted.Render(" · " + m.note)
-	}
-	return status
 }
 
-func (m Model) playlistsView() string {
-	if m.playlists.loading {
-		return m.sty.Muted.Render("正在加载歌单…")
-	}
-	if m.playlists.err != nil {
-		return m.sty.Error.Render(m.playlists.err.Error() + "，按 r 重试")
-	}
-	return m.playlists.list.View(m.sty)
-}
-
-func (m Model) songsView() string {
-	title := m.sty.Title.Render(fmt.Sprintf("歌单：%s", m.songs.playlist.Name))
-	var body string
+func (m Model) songsBody() bodyView {
+	b := bodyView{title: fmt.Sprintf("歌单：%s", m.songs.playlist.Name)}
 	switch {
 	case m.songs.loading:
-		body = m.sty.Muted.Render("正在加载歌曲…")
+		b.kind, b.notice = bodyNotice, "正在加载歌曲…"
 	case m.songs.err != nil:
-		body = m.sty.Error.Render(m.songs.err.Error() + "，按 r 重试")
+		b.kind, b.notice, b.isErr = bodyNotice, m.songs.err.Error()+"，按 r 重试", true
 	default:
-		body = m.songs.list.View(m.sty)
+		l := m.songs.list
+		b.kind, b.list = bodyList, listView{items: l.items, cursor: l.cursor, offset: l.offset, height: l.height}
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, title, "", body)
+	return b
 }
 
-func playlistItems(playlists []netease.Playlist) []string {
+func (m Model) statusState() statusView {
+	st := statusView{err: m.errNote, note: m.note, volume: m.volume}
+	if m.playing == nil {
+		return st
+	}
+	st.playing = true
+	st.paused = m.paused
+	st.track = m.playing.song.Name + " - " + m.playing.song.Artists
+	if pos, total, ok := m.queue.Position(); ok {
+		st.pos, st.total = pos, total
+	}
+	st.quality = qualityLabel(m.playing.level)
+	st.mode = modeLabel(m.queue.Mode())
+	st.nextUp = len(m.queue.NextUp())
+	return st
+}
+
+// popupState 将队列弹窗行拍平为纯数据快照。
+func (m Model) popupState() *popupView {
+	pv := &popupView{cursor: m.popup.cursor, offset: m.popup.offset, height: m.popup.height}
+	for _, r := range m.popup.rows {
+		if r.kind == rowHeader {
+			pv.rows = append(pv.rows, popupRowView{header: true, title: r.title})
+			continue
+		}
+		pv.rows = append(pv.rows, popupRowView{
+			text:    r.song.Name + " - " + r.song.Artists,
+			current: r.kind == rowCurrent,
+			dim:     r.kind == rowHistory || r.kind == rowUpcoming,
+		})
+	}
+	return pv
+}
+
+func playlistItems(playlists []netease.Playlist, g Glyphs) []string {
 	items := make([]string, len(playlists))
 	for i, p := range playlists {
-		mark := "♥" // 收藏
+		mark := g.PlaylistStarred // 收藏
 		if p.Created {
-			mark = "✎" // 创建
+			mark = g.PlaylistCreated // 创建
 		}
 		items[i] = fmt.Sprintf("%s %s (%d)", mark, p.Name, p.TrackCount)
 	}
