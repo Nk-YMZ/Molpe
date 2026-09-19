@@ -3,12 +3,15 @@ package ui
 
 import (
 	"fmt"
+	"strings"
+	"sync"
 
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"mountain-air/internal/mpris"
 	"mountain-air/internal/netease"
 	"mountain-air/internal/player"
 )
@@ -54,6 +57,37 @@ type playingInfo struct {
 	level string
 }
 
+// playerHolder 持有播放器引用，供 MPRIS 的 Position 查询回调使用。
+type playerHolder struct {
+	mu sync.Mutex
+	p  *player.Player
+}
+
+func (h *playerHolder) set(p *player.Player) {
+	h.mu.Lock()
+	h.p = p
+	h.mu.Unlock()
+}
+
+func (h *playerHolder) get() (*player.Player, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.p == nil {
+		return nil, fmt.Errorf("播放器未启动")
+	}
+	return h.p, nil
+}
+
+func (h *playerHolder) position() (float64, error) {
+	h.mu.Lock()
+	p := h.p
+	h.mu.Unlock()
+	if p == nil {
+		return 0, fmt.Errorf("播放器未启动")
+	}
+	return p.Position()
+}
+
 // Model 是 TUI 的根模型。
 type Model struct {
 	client  *netease.Client
@@ -67,10 +101,12 @@ type Model struct {
 	songs     songsPage
 	account   *netease.Account
 
-	player  *player.Player
-	playing *playingInfo
-	paused  bool
-	errNote string // 状态栏错误提示
+	player   *playerHolder
+	mpris    *mpris.Service // 为 nil 表示桌面集成不可用
+	mprisErr error
+	playing  *playingInfo
+	paused   bool
+	errNote  string // 状态栏错误提示
 
 	help   help.Model
 	width  int
@@ -82,14 +118,18 @@ func New(client *netease.Client, quality string) Model {
 	theme := DefaultTheme()
 	h := help.New()
 	h.Styles = help.DefaultStyles(true)
-	return Model{
+	m := Model{
 		client:  client,
 		quality: netease.NormalizeQuality(quality),
 		theme:   theme,
 		sty:     newStyles(theme),
 		login:   newLoginModel(client),
+		player:  &playerHolder{},
 		help:    h,
 	}
+	// MPRIS 不可用时仅记录，不影响主体功能。
+	m.mpris, m.mprisErr = mpris.New(m.player.position)
+	return m
 }
 
 // ShortHelp 与 FullHelp 实现 help.KeyMap，按当前页面展示按键。
@@ -111,7 +151,7 @@ func (m Model) ShortHelp() []key.Binding {
 func (m Model) FullHelp() [][]key.Binding { return [][]key.Binding{m.ShortHelp()} }
 
 func (m Model) Init() tea.Cmd {
-	return checkLoginCmd(m.client, true)
+	return tea.Batch(checkLoginCmd(m.client, true), listenMprisCmd(m.mpris))
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -128,6 +168,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err == nil && msg.account != nil {
 			m.account = msg.account
 			m.page = pagePlaylists
+			if m.mprisErr != nil {
+				m.errNote = "桌面媒体集成不可用：" + m.mprisErr.Error()
+			}
 			return m, m.fetchPlaylists()
 		}
 		m.page = pageLogin
@@ -155,6 +198,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case songURLFetchedMsg:
 		return m.handleSongURL(msg)
+	case mprisEventMsg:
+		return m.handleMprisEvent(mpris.Event(msg))
 	}
 
 	if m.page == pageLogin {
@@ -171,17 +216,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if key.Matches(msg, keys.Quit) {
-		if m.player != nil {
-			m.player.Close()
-		}
+		m.shutdown()
 		return m, tea.Quit
 	}
 
-	if key.Matches(msg, keys.Toggle) && m.player != nil && m.playing != nil {
-		m.paused = !m.paused
-		if err := m.player.SetPause(m.paused); err != nil {
-			m.errNote = err.Error()
-		}
+	if key.Matches(msg, keys.Toggle) && m.playing != nil {
+		m.setPaused(!m.paused)
 		return m, nil
 	}
 
@@ -246,22 +286,87 @@ func (m Model) handleSongURL(msg songURLFetchedMsg) (tea.Model, tea.Cmd) {
 		m.errNote = msg.err.Error()
 		return m, nil
 	}
-	if m.player == nil {
-		p, err := player.Start()
+	p, err := m.player.get()
+	if err != nil {
+		p, err = player.Start()
 		if err != nil {
 			m.errNote = err.Error()
 			return m, nil
 		}
-		m.player = p
+		m.player.set(p)
 	}
-	if err := m.player.Play(msg.url.URL); err != nil {
+	if err := p.Play(msg.url.URL); err != nil {
 		m.errNote = err.Error()
 		return m, nil
 	}
 	m.playing = &playingInfo{song: msg.song, level: msg.url.Level}
 	m.paused = false
 	m.errNote = ""
+	m.publishState()
 	return m, nil
+}
+
+// setPaused 切换暂停状态并同步桌面环境。
+func (m *Model) setPaused(paused bool) {
+	p, err := m.player.get()
+	if err != nil {
+		return
+	}
+	if err := p.SetPause(paused); err != nil {
+		m.errNote = err.Error()
+		return
+	}
+	m.paused = paused
+	m.publishState()
+}
+
+// publishState 向 MPRIS 推送当前曲目元数据与播放状态。
+func (m *Model) publishState() {
+	if m.mpris == nil {
+		return
+	}
+	if m.playing != nil {
+		s := m.playing.song
+		m.mpris.SetTrack(mpris.Track{
+			ID:       s.ID,
+			Title:    s.Name,
+			Artists:  strings.Split(s.Artists, "/"),
+			Album:    s.Album,
+			Duration: s.Duration,
+			ArtURL:   s.CoverURL,
+		})
+	}
+	if m.paused {
+		m.mpris.SetStatus("Paused")
+	} else {
+		m.mpris.SetStatus("Playing")
+	}
+}
+
+// handleMprisEvent 处理桌面环境（媒体键、KDE 媒体组件）发来的控制事件。
+func (m Model) handleMprisEvent(ev mpris.Event) (Model, tea.Cmd) {
+	if m.playing == nil {
+		return m, listenMprisCmd(m.mpris)
+	}
+	switch ev {
+	case mpris.EventPlayPause:
+		m.setPaused(!m.paused)
+	case mpris.EventPlay:
+		m.setPaused(false)
+	case mpris.EventPause, mpris.EventStop:
+		m.setPaused(true)
+	}
+	return m, listenMprisCmd(m.mpris)
+}
+
+// shutdown 释放播放器与 MPRIS 资源。
+func (m *Model) shutdown() {
+	if p, err := m.player.get(); err == nil {
+		p.Close()
+	}
+	if m.mpris != nil {
+		m.mpris.Close()
+	}
 }
 
 // listHeight 计算列表可见行数；extra 为页面内额外占用的行数。

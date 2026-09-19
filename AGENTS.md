@@ -31,13 +31,14 @@ main.go              入口（装配配置、netease 客户端、TUI）
 internal/config/     XDG 目录解析；面向用户的 config.json（音质偏好等）
 internal/netease/    网易云接口封装：Cookie 持久化、二维码登录、账号信息、歌单、播放地址
 internal/player/     mpv 子进程控制（JSON IPC over unix socket）
+internal/mpris/      MPRIS2 D-Bus 服务：向桌面环境暴露元数据/状态，接收媒体控制
 internal/ui/         Bubble Tea TUI：根模型 + 登录/歌单/歌曲页、主题、通用列表组件
 ```
 
 界面约定：纯键盘操作（不为鼠标做额外设计）；默认主题为纯黑背景（#000000），
 配色集中在 `internal/ui/theme.go`，通过 Theme 结构预留多主题扩展。
 
-模块名为 `mountain-air`（暂无远程仓库）。后续按需要新增 `internal/player`（mpv 控制）、`internal/queue`（播放队列）、`internal/mpris`（桌面集成）等，不提前创建。
+模块名为 `mountain-air`，远程仓库 `git@github.com:Nk-YMZ/Mountain-Air.git`（主分支 `main`）。后续按需要新增 `internal/queue`（播放队列）等，不提前创建。
 
 ## 已知坑：网易云风控（-462）
 
@@ -83,7 +84,6 @@ internal/ui/         Bubble Tea TUI：根模型 + 登录/歌单/歌曲页、主�
 
 ## 尚未确认的依赖
 
-- MPRIS：godbus/dbus 及 MPRIS2 实现（尚未引入）
 - mpv 是否支持所有网易云播放地址的流媒体协议与 Cookie/Header 传参，仍需持续验证
 
 ## 当前状态
@@ -113,4 +113,11 @@ internal/ui/         Bubble Tea TUI：根模型 + 登录/歌单/歌曲页、主�
 - Hi-Res 实际状态会结合 mpv 加载后的采样率/位深校正，避免接口返回等级与实际流参数不一致
 - 退出 TUI 时关闭 mpv 子进程并清理 IPC socket
 
-播放队列、MPRIS 尚未实现。
+MPRIS 桌面集成已实现（总线名 `org.mpris.MediaPlayer2.mountain-air`）：
+
+- 向系统暴露元数据（标题/艺术家/专辑/时长/封面 `mpris:artUrl`）与播放状态，
+  KDE 媒体组件可正常显示封面并控制
+- 接收系统媒体控制（Play/Pause/PlayPause/Stop，映射为播放/暂停；无队列故不支持切歌）
+- D-Bus 不可用时降级运行，不影响主体功能
+
+播放队列尚未实现。

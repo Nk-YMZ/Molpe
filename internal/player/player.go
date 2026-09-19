@@ -116,6 +116,22 @@ func (p *Player) lockedCommand(args ...any) (json.RawMessage, error) {
 	return resp.Data, nil
 }
 
+// Position 返回当前播放位置（秒）。
+func (p *Player) Position() (float64, error) {
+	data, err := p.command("get_property", "time-pos")
+	if err != nil {
+		return 0, err
+	}
+	if string(data) == "null" {
+		return 0, errors.New("当前没有可用播放位置")
+	}
+	var pos float64
+	if err := json.Unmarshal(data, &pos); err != nil {
+		return 0, fmt.Errorf("解析播放位置失败: %w", err)
+	}
+	return pos, nil
+}
+
 // Close 退出 mpv 子进程并清理 IPC socket。
 func (p *Player) Close() {
 	p.mu.Lock()

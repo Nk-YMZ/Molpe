@@ -39,6 +39,8 @@ github.com/go-musicfox/netease-music v1.6.0 h1:CpxcWFvRn48LTkQZpQCrRBBLAjcgR49YM
 github.com/go-musicfox/netease-music v1.6.0/go.mod h1:BPjxqVjl15N/S5iJXelX3wzz3/eoTec1b5QQH4u9oDg=
 github.com/go-musicfox/requests v0.2.3 h1:30hUisj05ZP4U81Re3/CuI3/x+9dljsIEL6DR+pS56w=
 github.com/go-musicfox/requests v0.2.3/go.mod h1:OqTmtUmkpkjyAnBHFEnmuO3OIvh1pTTGSNVtlAWKCMs=
+github.com/godbus/dbus/v5 v5.2.2 h1:TUR3TgtSVDmjiXOgAAyaZbYmIeP3DPkld3jgKGV8mXQ=
+github.com/godbus/dbus/v5 v5.2.2/go.mod h1:3AAv2+hPq5rdnr5txxxRwiGjPXamgoIHgz9FPBfOp3c=
 github.com/gomodule/redigo v1.9.3 h1:dNPSXeXv6HCq2jdyWfjgmhBdqnR6PRO3m/G05nvpPC8=
 github.com/gomodule/redigo v1.9.3/go.mod h1:KsU3hiK/Ay8U42qpaJk+kuNa3C+spxapWpM+ywhcgtw=
 github.com/google/go-cmp v0.6.0/go.mod h1:17dUlkBOakJ0+DkrSSNjCkIjxS6bF9zb3elmeNGIjoY=

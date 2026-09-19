@@ -101,6 +101,7 @@ func TestDebugSongURL(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Logf("共 %d 个歌单，扫描前 %d 首歌...", len(playlists), limit)
+		coverCount := 0
 		for _, p := range playlists {
 			if len(songs) >= limit {
 				break
@@ -114,9 +115,13 @@ func TestDebugSongURL(t *testing.T) {
 				if len(songs) >= limit {
 					break
 				}
+				if s.CoverURL != "" {
+					coverCount++
+				}
 				songs = append(songs, s)
 			}
 		}
+		t.Logf("已取 %d 首歌，其中 %d 首带封面 URL", len(songs), coverCount)
 	}
 
 	hiresFound := 0

@@ -60,6 +60,7 @@ type Song struct {
 	Name     string
 	Artists  string // 多个艺术家以 / 分隔
 	Album    string
+	CoverURL string // 专辑封面地址，供 MPRIS 等系统组件使用
 	Duration time.Duration
 }
 
@@ -80,7 +81,8 @@ func (c *Client) PlaylistSongs(id int64) ([]Song, error) {
 					Name string `json:"name"`
 				} `json:"ar"`
 				Al struct {
-					Name string `json:"name"`
+					Name   string `json:"name"`
+					PicURL string `json:"picUrl"`
 				} `json:"al"`
 			} `json:"tracks"`
 		} `json:"playlist"`
@@ -100,6 +102,7 @@ func (c *Client) PlaylistSongs(id int64) ([]Song, error) {
 			Name:     t.Name,
 			Artists:  strings.Join(artists, "/"),
 			Album:    t.Al.Name,
+			CoverURL: t.Al.PicURL,
 			Duration: time.Duration(t.DT) * time.Millisecond,
 		})
 	}
