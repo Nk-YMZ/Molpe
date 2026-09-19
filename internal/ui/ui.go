@@ -44,6 +44,8 @@ type keyMap struct {
 	VolumeDown key.Binding
 	Refresh    key.Binding
 	RefreshQR  key.Binding
+	Queue      key.Binding // 播放队列弹窗
+	Delete     key.Binding // 弹窗内删除选中曲目
 	Quit       key.Binding
 }
 
@@ -65,6 +67,8 @@ func defaultKeyMap() keyMap {
 		VolumeDown: key.NewBinding(key.WithKeys("-"), key.WithHelp("", "")),
 		Refresh:    key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "刷新")),
 		RefreshQR:  key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "刷新二维码")),
+		Queue:      key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "队列")),
+		Delete:     key.NewBinding(key.WithKeys("delete", "ctrl+d"), key.WithHelp("del", "删除")),
 		Quit:       key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "退出")),
 	}
 }
@@ -127,6 +131,7 @@ type Model struct {
 	playlists playlistsPage
 	songs     songsPage
 	account   *netease.Account
+	popup     queuePopup // 播放队列弹窗
 
 	player   *playerHolder
 	queue    *queue.Queue
@@ -216,12 +221,12 @@ func (m Model) ShortHelp() []key.Binding {
 		return []key.Binding{m.keys.RefreshQR, m.keys.Quit}
 	case pagePlaylists:
 		return []key.Binding{m.keys.Up, m.keys.Down, m.keys.Enter, m.keys.Next, m.keys.Prev,
-			m.keys.ModeCycle, m.keys.VolumeUp, m.keys.Refresh, m.keys.Quit}
+			m.keys.ModeCycle, m.keys.Queue, m.keys.VolumeUp, m.keys.Refresh, m.keys.Quit}
 	case pageSongs:
 		enter := m.keys.Enter
 		enter.SetHelp("enter", "播放")
 		return []key.Binding{m.keys.Up, m.keys.Down, enter, m.keys.Toggle, m.keys.PlayNext,
-			m.keys.Next, m.keys.Prev, m.keys.ModeCycle, m.keys.VolumeUp, m.keys.Back, m.keys.Quit}
+			m.keys.Next, m.keys.Prev, m.keys.ModeCycle, m.keys.Queue, m.keys.VolumeUp, m.keys.Back, m.keys.Quit}
 	default:
 		return []key.Binding{m.keys.Quit}
 	}
@@ -240,6 +245,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.playlists.list.SetHeight(m.listHeight(0))
 		m.songs.list.SetHeight(m.listHeight(2))
+		if m.popup.open {
+			m.popup.height = max(5, min(queuePopupMaxRows, m.height-6))
+			m.popup.ensureVisible()
+		}
 		return m, nil
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
@@ -253,6 +262,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds := []tea.Cmd{m.fetchPlaylists()}
 			// 配置开启自动开播时，继续播放上次退出时的歌曲。
 			if m.cfg.AutoPlay && m.playing != nil {
+				m.paused = false
 				cmds = append(cmds, m.playCmd(m.playing.song))
 			}
 			return m, tea.Batch(cmds...)
@@ -299,6 +309,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.paused = false
 			m.publishState()
 			m.saveQueue()
+			m.popup.open = false
 			return m, listenEndCmd(m.endCh)
 		}
 		m.saveQueue()
@@ -320,6 +331,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	// 弹窗打开时按键全部由弹窗处理。
+	if m.popup.open {
+		return m.updatePopup(msg)
+	}
+
 	if key.Matches(msg, m.keys.Quit) {
 		m.shutdown()
 		return m, tea.Quit
@@ -332,6 +348,12 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// 队列与音量控制在非登录页全局可用。
 	if m.page != pageLogin {
 		switch {
+		case key.Matches(msg, m.keys.Queue):
+			if _, ok := m.queue.Current(); !ok {
+				return m, m.setNote("当前没有正在播放的曲目")
+			}
+			m.openQueuePopup()
+			return m, nil
 		case key.Matches(msg, m.keys.Next):
 			return m.nextSong()
 		case key.Matches(msg, m.keys.Prev):
@@ -504,6 +526,8 @@ func (m Model) toggleOrResume() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if _, err := m.player.get(); err != nil {
+		// 待播状态：开始播放（handleSongURL 会保留 m.paused，这里先行解除）。
+		m.paused = false
 		return m, m.playCmd(m.playing.song)
 	}
 	m.setPaused(!m.paused)
@@ -554,11 +578,18 @@ func (m Model) handleSongURL(msg songURLFetchedMsg) (tea.Model, tea.Cmd) {
 		m.errNote = err.Error()
 		return m, nil
 	}
+	// 保留暂停状态：暂停中切歌（含弹窗删除当前曲）时新曲目加载后仍处于暂停；
+	// 待播状态的开始播放由入口在发起 playCmd 前自行解除 m.paused。
+	if m.paused {
+		if err := p.SetPause(true); err != nil {
+			m.errNote = err.Error()
+		}
+	}
 	m.playing = &playingInfo{song: msg.song, level: msg.url.Level}
-	m.paused = false
 	m.errNote = ""
 	m.note = ""
 	m.publishState()
+	m.refreshQueuePopup()
 	return m, nil
 }
 
@@ -612,6 +643,7 @@ func (m Model) handleMprisEvent(ev mpris.Event) (Model, tea.Cmd) {
 		if m.playing != nil {
 			if _, err := m.player.get(); err != nil {
 				// 待播状态下尚未启动播放器，直接拉取地址开始播放
+				m.paused = false
 				return m, tea.Batch(m.playCmd(m.playing.song), listen)
 			}
 			m.setPaused(false)
@@ -665,7 +697,11 @@ func (m Model) fetchPlaylists() tea.Cmd {
 }
 
 func (m Model) View() tea.View {
-	v := tea.NewView(m.viewContent())
+	content := m.viewContent()
+	if m.popup.open {
+		content = m.renderQueuePopup()
+	}
+	v := tea.NewView(content)
 	v.AltScreen = true
 	v.BackgroundColor = m.theme.Background
 	v.WindowTitle = "木末 Molpe"
@@ -703,9 +739,12 @@ func (m Model) statusView() string {
 		if m.paused {
 			icon = "⏸ "
 		}
-		status = m.sty.Status.Render(icon+m.playing.song.Name+" - "+m.playing.song.Artists) +
-			m.sty.Muted.Render(fmt.Sprintf(" [%s] [%s] [音量 %d%%]",
-				qualityLabel(m.playing.level), modeLabel(m.queue.Mode()), m.volume))
+		status = m.sty.Status.Render(icon + m.playing.song.Name + " - " + m.playing.song.Artists)
+		if pos, total, ok := m.queue.Position(); ok {
+			status += m.sty.Muted.Render(fmt.Sprintf(" (%d/%d)", pos, total))
+		}
+		status += m.sty.Muted.Render(fmt.Sprintf(" [%s] [%s] [音量 %d%%]",
+			qualityLabel(m.playing.level), modeLabel(m.queue.Mode()), m.volume))
 		if n := len(m.queue.NextUp()); n > 0 {
 			status += m.sty.Muted.Render(fmt.Sprintf(" [待播 %d]", n))
 		}

@@ -41,13 +41,15 @@ type Queue struct {
 
 	history []netease.Song // 实际播放过的歌曲，按时间顺序
 	hpos    int            // 当前曲在 history 中的下标，-1 表示尚未播放
+	cur     *netease.Song  // 当前播放曲，nil 表示无（刚被移除或尚未播放）
+	anchor  int            // cur 为 nil 时 pick 的歌单位置锚点（移除当前曲后保留），-1 表示无
 
 	nextUp []netease.Song // “下一首播放”队列，先进先出
 }
 
 // New 创建播放队列。songs 为初始歌单（可为空）。
 func New(songs []netease.Song, mode Mode, opts Options) *Queue {
-	q := &Queue{mode: mode, opts: opts, hpos: -1}
+	q := &Queue{mode: mode, opts: opts, hpos: -1, anchor: -1}
 	q.SetPlaylist(songs)
 	return q
 }
@@ -75,10 +77,10 @@ func (q *Queue) Songs() []netease.Song {
 
 // Current 返回当前播放的歌曲；尚未播放时 ok 为 false。
 func (q *Queue) Current() (song netease.Song, ok bool) {
-	if q.hpos < 0 || q.hpos >= len(q.history) {
+	if q.cur == nil {
 		return netease.Song{}, false
 	}
-	return q.history[q.hpos], true
+	return *q.cur, true
 }
 
 // Play 立即播放指定歌曲（手动点歌）：截断“上一首”回退出的前进历史，
@@ -104,7 +106,9 @@ func (q *Queue) Prev() (song netease.Song, ok bool) {
 		return netease.Song{}, false
 	}
 	q.hpos--
-	return q.history[q.hpos], true
+	song = q.history[q.hpos]
+	q.cur = &song // 持有副本，避免历史切片原地搬移时指针失效
+	return song, true
 }
 
 // Next 前进一首，优先级依次为：
@@ -116,7 +120,9 @@ func (q *Queue) Prev() (song netease.Song, ok bool) {
 func (q *Queue) Next() (song netease.Song, ok bool) {
 	if q.hpos+1 < len(q.history) {
 		q.hpos++
-		return q.history[q.hpos], true
+		song = q.history[q.hpos]
+		q.cur = &song // 持有副本，避免历史切片原地搬移时指针失效
+		return song, true
 	}
 	if len(q.nextUp) > 0 {
 		song = q.nextUp[0]
@@ -139,6 +145,9 @@ func (q *Queue) record(song netease.Song) {
 		q.history = append([]netease.Song(nil), q.history[over:]...)
 	}
 	q.hpos = len(q.history) - 1
+	s := song
+	q.cur = &s // 持有副本，避免历史切片原地搬移时指针失效
+	q.anchor = -1
 }
 
 func (q *Queue) historyLimit() int {
@@ -168,13 +177,13 @@ func (q *Queue) pick() (netease.Song, bool) {
 }
 
 // currentIndex 返回当前曲在歌单中的下标；未播放或当前曲不在歌单中时为 -1。
+// 当前曲刚被 RemoveCurrent 移除时，返回移除前保留的位置锚点。
 func (q *Queue) currentIndex() int {
-	cur, ok := q.Current()
-	if !ok {
-		return -1
+	if q.cur == nil {
+		return q.anchor
 	}
 	for i, s := range q.songs {
-		if s.ID == cur.ID {
+		if s.ID == q.cur.ID {
 			return i
 		}
 	}
@@ -193,4 +202,89 @@ func (q *Queue) randomIndex(cur int) int {
 		i++
 	}
 	return i
+}
+
+// History 返回完整历史记录的副本，按时间正序（越早越靠前）。
+func (q *Queue) History() []netease.Song {
+	return append([]netease.Song(nil), q.history...)
+}
+
+// HistoryPos 返回当前曲在历史记录中的下标；无当前曲时为 -1。
+func (q *Queue) HistoryPos() int {
+	if q.cur == nil {
+		return -1
+	}
+	return q.hpos
+}
+
+// Position 返回当前曲在歌单中的位置（从 1 计）与歌单总数；
+// 无当前曲或当前曲不在歌单中时 ok 为 false。
+func (q *Queue) Position() (pos, total int, ok bool) {
+	if q.cur == nil {
+		return 0, len(q.songs), false
+	}
+	idx := q.currentIndex()
+	if idx < 0 {
+		return 0, len(q.songs), false
+	}
+	return idx + 1, len(q.songs), true
+}
+
+// Upcoming 返回歌单中当前曲之后的歌曲及其在歌单中的起始下标；
+// 当前曲不在歌单中或已是歌单末尾时 songs 为空。
+// 与播放模式无关（随机模式下是否展示由调用方决定），不考虑循环回卷。
+func (q *Queue) Upcoming() (base int, songs []netease.Song) {
+	idx := q.currentIndex()
+	if idx < 0 || idx+1 >= len(q.songs) {
+		return 0, nil
+	}
+	return idx + 1, append([]netease.Song(nil), q.songs[idx+1:]...)
+}
+
+// RemoveHistory 删除历史记录中的第 i 条；当前曲请使用 RemoveCurrent。
+func (q *Queue) RemoveHistory(i int) {
+	if i < 0 || i >= len(q.history) || (q.cur != nil && i == q.hpos) {
+		return
+	}
+	q.history = append(q.history[:i], q.history[i+1:]...)
+	if i < q.hpos {
+		q.hpos--
+	}
+}
+
+// RemoveNextUp 删除“下一首播放”队列中的第 i 首。
+func (q *Queue) RemoveNextUp(i int) {
+	if i < 0 || i >= len(q.nextUp) {
+		return
+	}
+	q.nextUp = append(q.nextUp[:i], q.nextUp[i+1:]...)
+}
+
+// RemovePlaylist 删除歌单中的第 i 首歌；不影响历史与当前播放状态。
+func (q *Queue) RemovePlaylist(i int) {
+	if i < 0 || i >= len(q.songs) {
+		return
+	}
+	q.songs = append(q.songs[:i], q.songs[i+1:]...)
+	if q.anchor > i {
+		q.anchor--
+	}
+}
+
+// RemoveCurrent 移除当前播放曲：从历史与歌单中删除，队列回到无当前曲状态。
+// 歌单中的位置被保留为锚点，顺序/循环模式下的 Next 会从原位置之后继续；
+// 调用方通常紧接着调用 Next 跳到下一首。
+func (q *Queue) RemoveCurrent() {
+	if q.cur == nil {
+		return
+	}
+	if idx := q.currentIndex(); idx >= 0 {
+		q.songs = append(q.songs[:idx], q.songs[idx+1:]...)
+		q.anchor = idx - 1
+	} else {
+		q.anchor = -1
+	}
+	q.history = append(q.history[:q.hpos], q.history[q.hpos+1:]...)
+	q.hpos--
+	q.cur = nil
 }

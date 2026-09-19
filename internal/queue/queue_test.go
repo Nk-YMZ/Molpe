@@ -251,3 +251,127 @@ func TestSetMode(t *testing.T) {
 		t.Fatalf("切换为列表循环后应回到开头，得到 %d", s.ID)
 	}
 }
+
+func TestHistoryAndPos(t *testing.T) {
+	q := New(songs(1, 2, 3), ModeLoop, Options{})
+	if q.HistoryPos() != -1 {
+		t.Fatal("未播放时 HistoryPos 应为 -1")
+	}
+	q.Play(netease.Song{ID: 2})
+	h := q.History()
+	if len(h) != 1 || h[0].ID != 2 {
+		t.Fatalf("History = %v，预期 [2]", h)
+	}
+	h[0].ID = 99 // 副本，不影响内部状态
+	if q.History()[0].ID != 2 {
+		t.Fatal("History 应返回副本")
+	}
+	if q.HistoryPos() != 0 {
+		t.Fatalf("HistoryPos = %d，预期 0", q.HistoryPos())
+	}
+}
+
+func TestUpcoming(t *testing.T) {
+	q := New(songs(1, 2, 3), ModeLoop, Options{})
+	if _, u := q.Upcoming(); len(u) != 0 {
+		t.Fatal("未播放时 Upcoming 应为空")
+	}
+	q.Play(netease.Song{ID: 2})
+	base, u := q.Upcoming()
+	if base != 2 || len(u) != 1 || u[0].ID != 3 {
+		t.Fatalf("Upcoming = (%d, %v)，预期 (2, [3])", base, u)
+	}
+	q.Play(netease.Song{ID: 3})
+	if _, u := q.Upcoming(); len(u) != 0 {
+		t.Fatal("歌单末尾 Upcoming 应为空（不考虑循环回卷）")
+	}
+}
+
+func TestRemoveHistory(t *testing.T) {
+	q := New(songs(1, 2, 3, 4), ModeSequential, Options{})
+	for _, id := range []int64{1, 2, 3} {
+		q.Play(netease.Song{ID: id})
+	}
+	q.RemoveHistory(0) // 删除当前曲之前的历史
+	if q.HistoryPos() != 1 {
+		t.Fatalf("删除前置历史后 HistoryPos = %d，预期 1", q.HistoryPos())
+	}
+	if s, ok := q.Current(); !ok || s.ID != 3 {
+		t.Fatal("删除前置历史不应影响当前曲")
+	}
+	q.RemoveHistory(q.HistoryPos()) // 当前曲不可通过 RemoveHistory 删除
+	if len(q.History()) != 2 {
+		t.Fatal("RemoveHistory 不得删除当前曲")
+	}
+}
+
+func TestRemoveNextUp(t *testing.T) {
+	q := New(songs(1, 2), ModeLoop, Options{})
+	q.PlayNext(netease.Song{ID: 1})
+	q.PlayNext(netease.Song{ID: 2})
+	q.RemoveNextUp(0)
+	if nu := q.NextUp(); len(nu) != 1 || nu[0].ID != 2 {
+		t.Fatalf("NextUp = %v，预期 [2]", nu)
+	}
+	q.RemoveNextUp(5) // 越界为无操作
+	if len(q.NextUp()) != 1 {
+		t.Fatal("越界 RemoveNextUp 应为无操作")
+	}
+}
+
+func TestRemovePlaylist(t *testing.T) {
+	q := New(songs(1, 2, 3), ModeSequential, Options{})
+	q.Play(netease.Song{ID: 1})
+	q.RemovePlaylist(1) // 删除当前曲之后的 2
+	if s := mustNext(t, q); s.ID != 3 {
+		t.Fatalf("删除后续歌单曲后 Next = %d，预期 3", s.ID)
+	}
+	if _, ok := q.Next(); ok {
+		t.Fatal("删除后顺序模式应在新末尾停止")
+	}
+}
+
+func TestRemoveCurrent(t *testing.T) {
+	q := New(songs(1, 2, 3), ModeSequential, Options{})
+	q.Play(netease.Song{ID: 2})
+	q.RemoveCurrent()
+	if _, ok := q.Current(); ok {
+		t.Fatal("RemoveCurrent 后应无当前曲")
+	}
+	if q.HistoryPos() != -1 {
+		t.Fatalf("RemoveCurrent 后 HistoryPos = %d，预期 -1", q.HistoryPos())
+	}
+	// 顺序模式应从原位置之后继续（2 被移出歌单，下一首为 3）。
+	if s := mustNext(t, q); s.ID != 3 {
+		t.Fatalf("RemoveCurrent 后 Next = %d，预期 3", s.ID)
+	}
+	if len(q.Songs()) != 2 {
+		t.Fatalf("RemoveCurrent 应将当前曲移出歌单，歌单 = %v", q.Songs())
+	}
+}
+
+func TestRemoveCurrentThenLoop(t *testing.T) {
+	q := New(songs(1, 2, 3), ModeLoop, Options{})
+	q.Play(netease.Song{ID: 3}) // 末尾
+	q.RemoveCurrent()
+	// 循环模式从原位置之后继续：3 已删除，回卷到 1。
+	if s := mustNext(t, q); s.ID != 1 {
+		t.Fatalf("RemoveCurrent 后循环 Next = %d，预期 1", s.ID)
+	}
+}
+
+func TestPosition(t *testing.T) {
+	q := New(songs(1, 2, 3), ModeLoop, Options{})
+	if _, _, ok := q.Position(); ok {
+		t.Fatal("未播放时 Position 应为 false")
+	}
+	q.Play(netease.Song{ID: 2})
+	if pos, total, ok := q.Position(); !ok || pos != 2 || total != 3 {
+		t.Fatalf("Position = (%d, %d, %v)，预期 (2, 3, true)", pos, total, ok)
+	}
+	// 当前曲不在歌单中时为 false。
+	q.Play(netease.Song{ID: 9})
+	if _, _, ok := q.Position(); ok {
+		t.Fatal("当前曲不在歌单中时 Position 应为 false")
+	}
+}

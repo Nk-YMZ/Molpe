@@ -43,4 +43,11 @@ func (q *Queue) Restore(s State) {
 	if q.hpos < -1 {
 		q.hpos = -1
 	}
+	q.anchor = -1
+	if q.hpos >= 0 {
+		song := q.history[q.hpos]
+		q.cur = &song
+	} else {
+		q.cur = nil
+	}
 }
