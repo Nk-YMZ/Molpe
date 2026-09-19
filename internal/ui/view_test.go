@@ -150,20 +150,24 @@ func TestRenderHintFits(t *testing.T) {
 func TestRenderContentAnchorsBottom(t *testing.T) {
 	sty := testStyles()
 	s := viewState{
-		width: 80, height: 20, lyricLines: 3, gapAbove: 1, gapBelow: 1,
-		body:   bodyView{kind: bodyList, list: listView{items: []listItemView{{primary: "甲"}, {primary: "乙"}}, cursor: 0}},
-		status: statusView{playing: true, track: "歌 - 手"},
+		width: 80, height: 20, lyricLines: 3, gapAbove: 1, gapBelow: 1, playbackGapBelow: 1,
+		body:     bodyView{kind: bodyList, list: listView{items: []listItemView{{primary: "甲"}, {primary: "乙"}}, cursor: 0}},
+		progress: progressView{pos: 30, dur: 100, ok: true},
+		status:   statusView{playing: true, track: "歌 - 手"},
 	}
 	lines := strings.Split(strip(renderContent(s, sty)), "\n")
 	if len(lines) != 20 {
 		t.Fatalf("总行数应恒等于窗口高度: %d", len(lines))
 	}
-	// 底部锚定：倒数第 3 行是进度条（无播放进度时留空），倒数第 2 行是状态栏。
-	if strings.TrimSpace(lines[17]) != "" {
-		t.Errorf("无进度信息时进度条行应留空: %q", lines[17])
+	// 底部锚定：进度条与歌曲信息相邻，播放信息块之后留一行间距。
+	if !strings.Contains(lines[16], "00:30") {
+		t.Errorf("进度条位置不符: %q", lines[16])
 	}
-	if !strings.Contains(lines[18], "▶ 歌 - 手") {
-		t.Errorf("状态栏应锚定在倒数第 2 行: %q", lines[18])
+	if !strings.Contains(lines[17], "▶ 歌 - 手") {
+		t.Errorf("歌曲信息应紧邻进度条: %q", lines[17])
+	}
+	if strings.TrimSpace(lines[18]) != "" {
+		t.Errorf("播放信息块下方应留一行空白: %q", lines[18])
 	}
 	if !strings.Contains(lines[0], "木末") {
 		t.Errorf("头部应在第 1 行: %q", lines[0])

@@ -148,13 +148,14 @@ type Model struct {
 	note     string // 状态栏普通提示（如队列操作反馈），到期自动清除
 	noteID   int    // 提示序号，防止过期定时器误清更新的提示
 
-	lyrics        []netease.LyricLine // 当前曲目歌词（按时间排序）
-	lyricCur      int                 // 当前歌词行下标，-1 表示尚未到第一句
-	lyricLines    int                 // 歌词显示总行数（配置 lyric_lines）
-	lyricGapAbove int                 // 歌词区与正文区之间的空行数（配置 lyric_gap_above）
-	lyricGapBelow int                 // 歌词区与进度条之间的空行数（配置 lyric_gap_below）
-	lyricTicking  bool                // 歌词滚动定时器是否在运行
-	lyricSeq      int                 // 定时器序号，用于丢弃暂停/切歌后残留的过期定时器
+	lyrics           []netease.LyricLine // 当前曲目歌词（按时间排序）
+	lyricCur         int                 // 当前歌词行下标，-1 表示尚未到第一句
+	lyricLines       int                 // 歌词显示总行数（配置 lyric_lines）
+	lyricGapAbove    int                 // 歌词区与正文区之间的空行数（配置 lyric_gap_above）
+	lyricGapBelow    int                 // 歌词区与进度条之间的空行数（配置 lyric_gap_below）
+	playbackGapBelow int                 // 播放信息块与操作帮助行之间的空行数（配置 playback_gap_below）
+	lyricTicking     bool                // 歌词滚动定时器是否在运行
+	lyricSeq         int                 // 定时器序号，用于丢弃暂停/切歌后残留的过期定时器
 
 	progressPos     float64 // 当前播放位置（秒）
 	progressTicking bool    // 进度条定时器是否在运行
@@ -179,23 +180,24 @@ func New(client *netease.Client, cfg config.Config, dirs config.Dirs, theme Them
 		themeName = defaultThemeName
 	}
 	m := Model{
-		client:        client,
-		cfg:           cfg,
-		dirs:          dirs,
-		cfgWritable:   cfgErr == nil,
-		quality:       netease.NormalizeQuality(cfg.Quality),
-		volume:        cfg.EffectiveVolume(),
-		lyricLines:    cfg.EffectiveLyricLines(),
-		lyricGapAbove: cfg.EffectiveLyricGapAbove(),
-		lyricGapBelow: cfg.EffectiveLyricGapBelow(),
-		theme:         theme,
-		themeName:     themeName,
-		sty:           newStyles(theme),
-		keys:          defaultKeyMap(),
-		login:         newLoginModel(client),
-		player:        &playerHolder{},
-		queue:         queue.New(nil, queue.ModeLoop, queue.Options{}),
-		endCh:         make(chan struct{}, 1),
+		client:           client,
+		cfg:              cfg,
+		dirs:             dirs,
+		cfgWritable:      cfgErr == nil,
+		quality:          netease.NormalizeQuality(cfg.Quality),
+		volume:           cfg.EffectiveVolume(),
+		lyricLines:       cfg.EffectiveLyricLines(),
+		lyricGapAbove:    cfg.EffectiveLyricGapAbove(),
+		lyricGapBelow:    cfg.EffectiveLyricGapBelow(),
+		playbackGapBelow: cfg.EffectivePlaybackGapBelow(),
+		theme:            theme,
+		themeName:        themeName,
+		sty:              newStyles(theme),
+		keys:             defaultKeyMap(),
+		login:            newLoginModel(client),
+		player:           &playerHolder{},
+		queue:            queue.New(nil, queue.ModeLoop, queue.Options{}),
+		endCh:            make(chan struct{}, 1),
 
 		cleanupOnce: &sync.Once{},
 	}
@@ -778,10 +780,10 @@ func (m *Model) shutdown() {
 func (m Model) Cleanup() { m.shutdown() }
 
 // listHeight 计算列表可见行数；extra 为页面内额外占用的行数。
-// 歌词区固定占用 lyricLines 行及其上下间距，加上 chromeFixed 行界面框架，
+// 歌词区固定占用 lyricLines 行，各区块间距与 chromeFixed 行界面框架
 // 一并从可用高度中扣除。
 func (m Model) listHeight(extra int) int {
-	h := m.height - chromeFixed - m.lyricLines - m.lyricGapAbove - m.lyricGapBelow - extra
+	h := m.height - chromeFixed - m.lyricLines - m.lyricGapAbove - m.lyricGapBelow - m.playbackGapBelow - extra
 	if h < 1 {
 		return 1
 	}
@@ -809,14 +811,15 @@ func (m Model) View() tea.View {
 // 列表项等已有切片直接引用，不做拷贝；歌词文本逐条复制以隔离内部类型。
 func (m Model) buildViewState() viewState {
 	s := viewState{
-		width:        m.width,
-		height:       m.height,
-		headerRight:  m.headerRight(),
-		lyricCur:     m.lyricCur,
-		lyricLines:   m.lyricLines,
-		gapAbove:     m.lyricGapAbove,
-		gapBelow:     m.lyricGapBelow,
-		helpBindings: m.ShortHelp(),
+		width:            m.width,
+		height:           m.height,
+		headerRight:      m.headerRight(),
+		lyricCur:         m.lyricCur,
+		lyricLines:       m.lyricLines,
+		gapAbove:         m.lyricGapAbove,
+		gapBelow:         m.lyricGapBelow,
+		playbackGapBelow: m.playbackGapBelow,
+		helpBindings:     m.ShortHelp(),
 	}
 	s.progress = progressView{pos: m.progressPos, ok: m.playing != nil}
 	if m.playing != nil {

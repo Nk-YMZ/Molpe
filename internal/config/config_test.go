@@ -75,21 +75,32 @@ func TestEffectiveLyricGapDefaults(t *testing.T) {
 	if got := c.EffectiveLyricGapBelow(); got != 1 {
 		t.Errorf("EffectiveLyricGapBelow() = %d，预期 1", got)
 	}
-	zero, three := 0, 3
-	c.LyricGapAbove, c.LyricGapBelow = &zero, &three
+	zero, ten := 0, 10
+	c.LyricGapAbove, c.LyricGapBelow = &zero, &ten
 	if got := c.EffectiveLyricGapAbove(); got != 0 {
 		t.Errorf("0 是合法的紧凑间距，得到 %d", got)
 	}
-	if got := c.EffectiveLyricGapBelow(); got != 3 {
-		t.Errorf("EffectiveLyricGapBelow() = %d，预期 3", got)
+	if got := c.EffectiveLyricGapBelow(); got != 10 {
+		t.Errorf("EffectiveLyricGapBelow() = %d，预期 10", got)
 	}
-	neg, big := -1, 9
+	neg, big := -1, 11
 	c.LyricGapAbove, c.LyricGapBelow = &neg, &big
 	if got := c.EffectiveLyricGapAbove(); got != 1 {
 		t.Errorf("非法值应回退默认 1，得到 %d", got)
 	}
 	if got := c.EffectiveLyricGapBelow(); got != 1 {
 		t.Errorf("非法值应回退默认 1，得到 %d", got)
+	}
+	if got := c.EffectivePlaybackGapBelow(); got != 1 {
+		t.Errorf("EffectivePlaybackGapBelow() = %d，预期 1", got)
+	}
+	c.PlaybackGapBelow = &ten
+	if got := c.EffectivePlaybackGapBelow(); got != 10 {
+		t.Errorf("EffectivePlaybackGapBelow() = %d，预期 10", got)
+	}
+	c.PlaybackGapBelow = &big
+	if got := c.EffectivePlaybackGapBelow(); got != 1 {
+		t.Errorf("非法播放信息块间距应回退默认 1，得到 %d", got)
 	}
 }
 
@@ -114,22 +125,23 @@ func TestLoadConfigCreatesCompleteTemplate(t *testing.T) {
 	if file.Quality != "lossless" || file.AutoPlay || file.Volume != 100 || file.VolumeStep != 5 {
 		t.Errorf("基础配置默认值不符: %+v", file)
 	}
-	if !file.LyricTranslation || file.LyricLines != 5 || file.LyricGapAbove != 1 || file.LyricGapBelow != 1 {
+	if !file.LyricTranslation || file.LyricLines != 5 || file.LyricGapAbove != 1 || file.LyricGapBelow != 1 || file.PlaybackGapBelow != 1 {
 		t.Errorf("歌词配置默认值不符: %+v", file)
 	}
 	if file.Theme != defaultTheme {
 		t.Errorf("默认主题 = %q，预期 %q", file.Theme, defaultTheme)
 	}
 	for name, help := range map[string]string{
-		"quality":           file.Help.Quality,
-		"auto_play":         file.Help.AutoPlay,
-		"volume":            file.Help.Volume,
-		"volume_step":       file.Help.VolumeStep,
-		"lyric_translation": file.Help.LyricTranslation,
-		"lyric_lines":       file.Help.LyricLines,
-		"lyric_gap_above":   file.Help.LyricGapAbove,
-		"lyric_gap_below":   file.Help.LyricGapBelow,
-		"theme":             file.Help.Theme,
+		"quality":            file.Help.Quality,
+		"auto_play":          file.Help.AutoPlay,
+		"volume":             file.Help.Volume,
+		"volume_step":        file.Help.VolumeStep,
+		"lyric_translation":  file.Help.LyricTranslation,
+		"lyric_lines":        file.Help.LyricLines,
+		"lyric_gap_above":    file.Help.LyricGapAbove,
+		"lyric_gap_below":    file.Help.LyricGapBelow,
+		"playback_gap_below": file.Help.PlaybackGapBelow,
+		"theme":              file.Help.Theme,
 	} {
 		if help == "" {
 			t.Errorf("%s 缺少说明", name)

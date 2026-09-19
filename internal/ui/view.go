@@ -23,7 +23,7 @@ import (
 
 // chromeFixed 是正文区之外固定占用的行数：
 // 头部(1) + 分隔线(1) + 空行(1) + 进度(1) + 状态(1) + 帮助(1)。
-// 歌词区行数（lyricLines）与歌词区上下间距（gapAbove/gapBelow，来自配置）另计。
+// 歌词区行数与各区块间距（来自配置）另计。
 // 交互层按同一常量计算列表高度。
 const chromeFixed = 6
 
@@ -118,11 +118,12 @@ type viewState struct {
 
 	body bodyView
 
-	lyrics     []string // 歌词原文（未截断）
-	lyricCur   int      // 当前歌词行下标，-1 表示尚未到第一句
-	lyricLines int      // 歌词显示总行数
-	gapAbove   int      // 歌词区与正文区之间的空行数
-	gapBelow   int      // 歌词区与进度条之间的空行数
+	lyrics           []string // 歌词原文（未截断）
+	lyricCur         int      // 当前歌词行下标，-1 表示尚未到第一句
+	lyricLines       int      // 歌词显示总行数
+	gapAbove         int      // 歌词区与正文区之间的空行数
+	gapBelow         int      // 歌词区与进度条之间的空行数
+	playbackGapBelow int      // 播放信息块与操作帮助行之间的空行数
 
 	progress progressView
 	status   statusView
@@ -146,9 +147,9 @@ func renderRoot(s viewState, sty styles) string {
 }
 
 func renderContent(s viewState, sty styles) string {
-	// 栅格固定：正文区高度 = 总高 - chromeFixed - 歌词行数 - 上下间距，
+	// 栅格固定：正文区高度 = 总高 - chromeFixed - 歌词行数 - 各区块间距，
 	// 底部区块（歌词/进度/状态/帮助）锚定在屏幕底部，不随正文内容多少浮动。
-	bodyH := max(1, s.height-chromeFixed-s.lyricLines-s.gapAbove-s.gapBelow)
+	bodyH := max(1, s.height-chromeFixed-s.lyricLines-s.gapAbove-s.gapBelow-s.playbackGapBelow)
 	blocks := []string{
 		renderHeader(s.width, s.headerRight, sty),
 		renderRule(s.width, sty),
@@ -165,8 +166,11 @@ func renderContent(s viewState, sty styles) string {
 	blocks = append(blocks,
 		renderProgress(s.progress, s.width, sty),
 		renderStatus(s.status, sty),
-		renderHint(s.helpBindings, s.width, sty),
 	)
+	for range s.playbackGapBelow {
+		blocks = append(blocks, "")
+	}
+	blocks = append(blocks, renderHint(s.helpBindings, s.width, sty))
 	return lipgloss.JoinVertical(lipgloss.Left, blocks...)
 }
 

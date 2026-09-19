@@ -31,10 +31,12 @@ type Config struct {
 	LyricTranslation *bool `json:"lyric_translation,omitempty"`
 	// LyricLines 歌词显示总行数；<1 或 >15 时使用默认值 5。
 	LyricLines int `json:"lyric_lines,omitempty"`
-	// LyricGapAbove 歌词区与上方正文区之间的空行数；null、<0 或 >5 时使用默认值 1。
+	// LyricGapAbove 歌词区与上方正文区之间的空行数；null、<0 或 >10 时使用默认值 1。
 	LyricGapAbove *int `json:"lyric_gap_above,omitempty"`
-	// LyricGapBelow 歌词区与下方进度条之间的空行数；null、<0 或 >5 时使用默认值 1。
+	// LyricGapBelow 歌词区与下方进度条之间的空行数；null、<0 或 >10 时使用默认值 1。
 	LyricGapBelow *int `json:"lyric_gap_below,omitempty"`
+	// PlaybackGapBelow 播放信息块（进度条 + 当前歌曲信息）与操作帮助行之间的空行数；null、<0 或 >10 时使用默认值 1。
+	PlaybackGapBelow *int `json:"playback_gap_below,omitempty"`
 	// Theme 主题名；内置 default/ember，其他名称对应扩展目录 themes/<name>.json；空使用默认主题。
 	Theme string `json:"theme,omitempty"`
 }
@@ -44,15 +46,15 @@ const (
 	defaultVolumeStep = 5
 	defaultLyricLines = 5
 	maxLyricLines     = 15
-	defaultLyricGap   = 1
-	maxLyricGap       = 5
+	defaultSectionGap = 1
+	maxSectionGap     = 10
 )
 
 // DefaultConfig 返回默认配置。
 func DefaultConfig() Config {
 	volume := defaultVolume
 	translation := true
-	above, below := defaultLyricGap, defaultLyricGap
+	above, below, playbackBelow := defaultSectionGap, defaultSectionGap, defaultSectionGap
 	return Config{
 		Quality:          "lossless",
 		Volume:           &volume,
@@ -61,6 +63,7 @@ func DefaultConfig() Config {
 		LyricLines:       defaultLyricLines,
 		LyricGapAbove:    &above,
 		LyricGapBelow:    &below,
+		PlaybackGapBelow: &playbackBelow,
 		Theme:            defaultTheme,
 	}
 }
@@ -107,10 +110,15 @@ func (c Config) EffectiveLyricGapBelow() int {
 	return effectiveGap(c.LyricGapBelow)
 }
 
-// effectiveGap 校验歌词区间距：null 或越界回退默认值，0 是合法的紧凑间距。
+// EffectivePlaybackGapBelow 返回播放信息块与操作帮助行之间的生效空行数。
+func (c Config) EffectivePlaybackGapBelow() int {
+	return effectiveGap(c.PlaybackGapBelow)
+}
+
+// effectiveGap 校验界面区块间距：null 或越界回退默认值，0 是合法的紧凑间距。
 func effectiveGap(v *int) int {
-	if v == nil || *v < 0 || *v > maxLyricGap {
-		return defaultLyricGap
+	if v == nil || *v < 0 || *v > maxSectionGap {
+		return defaultSectionGap
 	}
 	return *v
 }
@@ -145,6 +153,7 @@ type configHelp struct {
 	LyricLines       string `json:"lyric_lines"`
 	LyricGapAbove    string `json:"lyric_gap_above"`
 	LyricGapBelow    string `json:"lyric_gap_below"`
+	PlaybackGapBelow string `json:"playback_gap_below"`
 	Theme            string `json:"theme"`
 }
 
@@ -160,6 +169,7 @@ type configFileData struct {
 	LyricLines       int        `json:"lyric_lines"`
 	LyricGapAbove    int        `json:"lyric_gap_above"`
 	LyricGapBelow    int        `json:"lyric_gap_below"`
+	PlaybackGapBelow int        `json:"playback_gap_below"`
 	Theme            string     `json:"theme"`
 }
 
@@ -176,8 +186,9 @@ func newConfigFileData(cfg Config) configFileData {
 			VolumeStep:       "按 +/- 调节音量时的步进百分比；整数，范围：1-100",
 			LyricTranslation: "歌词是否显示翻译；可选值：true、false",
 			LyricLines:       "歌词区域显示的总行数；整数，范围：1-15",
-			LyricGapAbove:    "歌词区域与上方正文区域之间的空行数；整数，范围：0-5",
-			LyricGapBelow:    "歌词区域与下方进度条之间的空行数；整数，范围：0-5",
+			LyricGapAbove:    "歌词区域与上方正文区域之间的空行数；整数，范围：0-10",
+			LyricGapBelow:    "歌词区域与下方进度条之间的空行数；整数，范围：0-10",
+			PlaybackGapBelow: "播放信息块（进度条和当前歌曲信息）与操作帮助行之间的空行数；整数，范围：0-10",
 			Theme:            "主题名称；内置值：default、ember；其他字符串对应扩展目录 themes/<名称>.json",
 		},
 		Quality:          cfg.Quality,
@@ -188,6 +199,7 @@ func newConfigFileData(cfg Config) configFileData {
 		LyricLines:       cfg.EffectiveLyricLines(),
 		LyricGapAbove:    cfg.EffectiveLyricGapAbove(),
 		LyricGapBelow:    cfg.EffectiveLyricGapBelow(),
+		PlaybackGapBelow: cfg.EffectivePlaybackGapBelow(),
 		Theme:            theme,
 	}
 }
