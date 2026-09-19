@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"time"
+
 	tea "charm.land/bubbletea/v2"
 
 	"molpe/internal/mpris"
@@ -18,6 +20,28 @@ type mprisEventMsg mpris.Event
 
 // playerEndedMsg 表示当前曲目自然播完（mpv end-file/eof），应自动连播。
 type playerEndedMsg struct{}
+
+// progressInterval 进度条刷新间隔。仅在播放中运行，暂停时完全停止。
+const progressInterval = time.Second
+
+// progressTickMsg 进度条刷新定时器消息；seq 与 Model.progressSeq 不一致时
+// 说明是暂停/切歌后残留的过期定时器，直接丢弃。
+type progressTickMsg struct{ seq int }
+
+// scheduleProgressTick 安排进度条刷新：播放中每秒唤醒一次读取播放位置；
+// 暂停、无播放、已在运行时不启动。
+func (m *Model) scheduleProgressTick() tea.Cmd {
+	if m.progressTicking || m.paused || m.playing == nil {
+		return nil
+	}
+	if _, err := m.player.get(); err != nil {
+		return nil
+	}
+	m.progressTicking = true
+	m.progressSeq++
+	seq := m.progressSeq
+	return tea.Tick(progressInterval, func(time.Time) tea.Msg { return progressTickMsg{seq} })
+}
 
 // playCmd 拉取歌曲播放地址。每次发起都会递增请求序号，
 // 快速连续切歌时先发出的慢响应会被 handleSongURL 按序号丢弃。

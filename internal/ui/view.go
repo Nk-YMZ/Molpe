@@ -49,7 +49,8 @@ type loginView struct {
 	notice string
 }
 
-// statusView 状态栏快照。
+// statusView 状态栏快照：只保留正在播放的核心信息，
+// 音质/模式/音量等次要信息移到头部右侧弱化显示。
 type statusView struct {
 	err     string // 非空时整行替换
 	playing bool
@@ -57,11 +58,15 @@ type statusView struct {
 	track   string // "歌名 - 艺术家"
 	pos     int    // 歌单内位置（从 1 计），0 表示不在歌单
 	total   int
-	quality string
-	mode    string
-	volume  int
 	nextUp  int // 待播数量
 	note    string
+}
+
+// progressView 播放进度快照。
+type progressView struct {
+	pos float64 // 已播放秒数
+	dur float64 // 总时长秒数
+	ok  bool    // 是否可显示（播放中且时长已知）
 }
 
 // popupRowView 队列弹窗行快照。
@@ -86,13 +91,16 @@ type viewState struct {
 	width  int
 	height int
 
+	headerRight string // 头部右侧的次要信息（模式 · 音质 · 音量）
+
 	body bodyView
 
 	lyrics     []string // 歌词原文（未截断）
 	lyricCur   int      // 当前歌词行下标，-1 表示尚未到第一句
 	lyricLines int      // 歌词显示总行数
 
-	status statusView
+	progress progressView
+	status   statusView
 
 	popup  *popupView // 队列弹窗，nil 表示关闭
 	picker *listView  // 主题选择弹窗，nil 表示关闭
@@ -119,14 +127,59 @@ func renderRoot(s viewState, sty styles, h help.Model) string {
 }
 
 func renderContent(s viewState, sty styles, h help.Model) string {
-	header := sty.Title.Render("木末 Molpe")
+	// 栅格固定：正文区高度 = 总高 - 头部(1) - 空行(2) - 歌词(n) - 进度(1) - 状态(1) - 帮助(1)，
+	// 底部区块（歌词/进度/状态/帮助）锚定在屏幕底部，不随正文内容多少浮动。
+	bodyH := max(1, s.height-6-s.lyricLines)
+	body := renderBody(s.body, sty)
+	if s.body.kind == bodyLogin {
+		// 登录页二维码截断后将无法扫描，只补空行不截断。
+		body = padHeight(body, bodyH)
+	} else {
+		body = fixHeight(body, bodyH)
+	}
 	return lipgloss.JoinVertical(lipgloss.Left,
-		header, "",
-		renderBody(s.body, sty), "",
+		renderHeader(s.width, s.headerRight, sty), "",
+		body, "",
 		renderLyrics(s.lyrics, s.lyricCur, s.lyricLines, s.width, sty),
+		renderProgress(s.progress, s.width, sty),
 		renderStatus(s.status, sty),
 		h.View(staticHelpMap{s.helpBindings}),
 	)
+}
+
+// fixHeight 将内容钳制为固定行数：超出截断，不足补空行。
+func fixHeight(content string, lines int) string {
+	ls := strings.Split(content, "\n")
+	if len(ls) > lines {
+		ls = ls[:lines]
+	}
+	for len(ls) < lines {
+		ls = append(ls, "")
+	}
+	return strings.Join(ls, "\n")
+}
+
+// padHeight 只将内容补足到固定行数，不截断。
+func padHeight(content string, lines int) string {
+	ls := strings.Split(content, "\n")
+	for len(ls) < lines {
+		ls = append(ls, "")
+	}
+	return strings.Join(ls, "\n")
+}
+
+// renderHeader 渲染头部：左侧标题，右侧次要信息（弱化）；
+// 宽度不足时舍弃右侧信息，保证标题完整。
+func renderHeader(width int, right string, sty styles) string {
+	const title = "木末 Molpe"
+	if right == "" || width <= 0 {
+		return sty.Title.Render(title)
+	}
+	gap := width - ansi.StringWidth(title) - ansi.StringWidth(right)
+	if gap < 2 {
+		return sty.Title.Render(title)
+	}
+	return sty.Title.Render(title) + strings.Repeat(" ", gap) + sty.Muted.Render(right)
 }
 
 func renderBody(b bodyView, sty styles) string {
@@ -182,7 +235,7 @@ func renderList(l listView, sty styles) string {
 	return b.String()
 }
 
-// renderStatus 渲染状态栏：常驻播放信息，操作提示追加其后；
+// renderStatus 渲染状态栏：常驻正在播放的核心信息，操作提示追加其后；
 // 仅错误提示会整行替换。
 func renderStatus(st statusView, sty styles) string {
 	if st.err != "" {
@@ -200,7 +253,6 @@ func renderStatus(st statusView, sty styles) string {
 		if st.pos > 0 {
 			status += sty.Muted.Render(fmt.Sprintf(" (%d/%d)", st.pos, st.total))
 		}
-		status += sty.Muted.Render(fmt.Sprintf(" [%s] [%s] [音量 %d%%]", st.quality, st.mode, st.volume))
 		if st.nextUp > 0 {
 			status += sty.Muted.Render(fmt.Sprintf(" [待播 %d]", st.nextUp))
 		}
@@ -211,9 +263,37 @@ func renderStatus(st statusView, sty styles) string {
 	return status
 }
 
+// renderProgress 渲染播放进度条：已播放部分 + 头部 + 未播放部分，
+// 两端为时间标签；无播放或时长未知时整行留空（保持栅格稳定）。
+func renderProgress(p progressView, width int, sty styles) string {
+	if !p.ok || p.dur <= 0 {
+		return ""
+	}
+	pos := min(p.pos, p.dur)
+	left, right := formatTime(pos), formatTime(p.dur)
+	barW := width - 14 // 两侧时间标签与空格
+	if barW < 8 {
+		return sty.Muted.Render(left + " / " + right)
+	}
+	filled := int(pos / p.dur * float64(barW))
+	var fillStr string
+	if head := sty.glyphs.ProgressHead; head != "" && filled > 0 {
+		fillStr = strings.Repeat(sty.glyphs.ProgressFill, filled-1) + head
+	} else if filled > 0 {
+		fillStr = strings.Repeat(sty.glyphs.ProgressFill, filled)
+	}
+	bar := sty.Status.Render(fillStr) + sty.Muted.Render(strings.Repeat(sty.glyphs.ProgressEmpty, barW-filled))
+	return sty.Muted.Render(left) + " " + bar + " " + sty.Muted.Render(right)
+}
+
+func formatTime(sec float64) string {
+	s := max(0, int(sec))
+	return fmt.Sprintf("%02d:%02d", s/60, s%60)
+}
+
 // renderLyrics 渲染滚动歌词区：固定 n 行，当前句居中高亮，上下各占一半，
 // 开头结尾不足时留空；无歌词时整区留空。第一句尚未开始时按第一句
-// 居中排版但不高亮，避免整区位置跳变。
+// 居中排版但不高亮，避免整区位置跳变。歌词文本水平居中于窗口。
 func renderLyrics(lines []string, cur, n, width int, sty styles) string {
 	center := n / 2
 	anchor := max(0, cur) // 排版锚点：-1 时视为第一句
@@ -227,6 +307,10 @@ func renderLyrics(lines []string, cur, n, width int, sty styles) string {
 		text := lines[idx]
 		if width > 0 {
 			text = ansi.Truncate(text, width, "")
+		}
+		// 水平居中：先补左侧留白，再上样式，避免样式重置留白。
+		if pad := (width - ansi.StringWidth(text)) / 2; pad > 0 {
+			text = strings.Repeat(" ", pad) + text
 		}
 		if idx == cur {
 			out = append(out, sty.Status.Render(text))
@@ -284,12 +368,11 @@ func renderThemePicker(l listView, sty styles, width, height int) string {
 	return placeCentered(content, sty, width, height)
 }
 
-// placeCentered 将内容装入圆角边框并居中放置在屏幕上。
+// placeCentered 将内容装入主题边框并居中放置在屏幕上。
 func placeCentered(content string, sty styles, width, height int) string {
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(sty.borderColor).
-		Padding(0, 1).
-		Render(content)
-	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, box)
+	box := lipgloss.NewStyle().Padding(0, 1)
+	if !sty.noBorder {
+		box = box.Border(sty.border).BorderForeground(sty.borderColor)
+	}
+	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, box.Render(content))
 }

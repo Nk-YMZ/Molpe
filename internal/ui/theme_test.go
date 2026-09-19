@@ -23,7 +23,7 @@ func TestLoadThemeMergesDefaults(t *testing.T) {
 		t.Errorf("覆盖字段未生效: %+v", th)
 	}
 	d := DefaultTheme()
-	if th.Colors.Background != d.Colors.Background || th.Glyphs.Playing != d.Glyphs.Playing {
+	if th.Colors.Foreground != d.Colors.Foreground || th.Glyphs.Playing != d.Glyphs.Playing {
 		t.Errorf("未指定字段未保留默认值: %+v", th)
 	}
 }

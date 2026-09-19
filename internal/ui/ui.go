@@ -154,6 +154,10 @@ type Model struct {
 	lyricTicking bool                // 歌词滚动定时器是否在运行
 	lyricSeq     int                 // 定时器序号，用于丢弃暂停/切歌后残留的过期定时器
 
+	progressPos     float64 // 当前播放位置（秒）
+	progressTicking bool    // 进度条定时器是否在运行
+	progressSeq     int     // 定时器序号，用于丢弃暂停/切歌后残留的过期定时器
+
 	help   help.Model
 	width  int
 	height int
@@ -330,6 +334,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, m.scheduleLyricTick()
+	case progressTickMsg:
+		if msg.seq != m.progressSeq {
+			return m, nil // 过期定时器（暂停/切歌后残留）
+		}
+		m.progressTicking = false
+		if m.playing == nil {
+			return m, nil
+		}
+		if p, err := m.player.get(); err == nil {
+			if pos, err := p.Position(); err == nil {
+				m.progressPos = pos
+			}
+		}
+		return m, m.scheduleProgressTick()
 	case noteExpiredMsg:
 		if msg.id == m.noteID {
 			m.note = ""
@@ -637,9 +655,16 @@ func (m Model) handleSongURL(msg songURLFetchedMsg) (tea.Model, tea.Cmd) {
 	m.lyricCur = -1
 	m.lyricTicking = false
 	m.lyricSeq++
+	// 进度条位置归零（进度条常显，由新曲目的元数据时长立即重绘）。
+	m.progressPos = 0
+	m.progressTicking = false
+	m.progressSeq++
 	m.publishState()
 	m.refreshQueuePopup()
-	return m, m.fetchLyricsCmd(msg.song.ID)
+	// 先调度再返回：scheduleProgressTick 是指针方法，会修改 progressTicking，
+	// 若直接写在 return 表达式里，m 会先被拷贝导致标记丢失。
+	cmd := tea.Batch(m.fetchLyricsCmd(msg.song.ID), m.scheduleProgressTick())
+	return m, cmd
 }
 
 // setPaused 切换暂停状态并同步桌面环境；恢复播放时重启歌词滚动定时器
@@ -656,9 +681,11 @@ func (m *Model) setPaused(paused bool) tea.Cmd {
 	m.paused = paused
 	m.publishState()
 	if paused {
+		// 暂停：进度条与歌词定时器自然失效（序号递增丢弃残留定时器）。
+		m.progressSeq++
 		return nil
 	}
-	return m.scheduleLyricTick()
+	return tea.Batch(m.scheduleLyricTick(), m.scheduleProgressTick())
 }
 
 // publishState 向 MPRIS 推送当前曲目元数据与播放状态。
@@ -733,9 +760,9 @@ func (m *Model) shutdown() {
 func (m Model) Cleanup() { m.shutdown() }
 
 // listHeight 计算列表可见行数；extra 为页面内额外占用的行数。
-// 歌词区固定占用 lyricLines 行，同样从可用高度中扣除。
+// 歌词区固定占用 lyricLines 行，进度条固定 1 行，同样从可用高度中扣除。
 func (m Model) listHeight(extra int) int {
-	h := m.height - 5 - m.lyricLines - extra
+	h := m.height - 6 - m.lyricLines - extra
 	if h < 1 {
 		return 1
 	}
@@ -765,9 +792,14 @@ func (m Model) buildViewState() viewState {
 	s := viewState{
 		width:        m.width,
 		height:       m.height,
+		headerRight:  m.headerRight(),
 		lyricCur:     m.lyricCur,
 		lyricLines:   m.lyricLines,
 		helpBindings: m.ShortHelp(),
+	}
+	s.progress = progressView{pos: m.progressPos, ok: m.playing != nil}
+	if m.playing != nil {
+		s.progress.dur = m.playing.song.Duration.Seconds()
 	}
 	if len(m.lyrics) > 0 {
 		s.lyrics = make([]string, len(m.lyrics))
@@ -829,8 +861,22 @@ func (m Model) songsBody() bodyView {
 	return b
 }
 
+// headerRight 构建头部右侧的次要信息：模式 · 音质 · 音量。
+// 音质显示当前曲目的实际等级，未播放时显示配置的偏好音质。
+func (m Model) headerRight() string {
+	q := m.quality
+	if m.playing != nil {
+		q = m.playing.level
+	}
+	return strings.Join([]string{
+		modeLabel(m.queue.Mode()),
+		qualityLabel(q),
+		fmt.Sprintf("%d%%", m.volume),
+	}, " · ")
+}
+
 func (m Model) statusState() statusView {
-	st := statusView{err: m.errNote, note: m.note, volume: m.volume}
+	st := statusView{err: m.errNote, note: m.note}
 	if m.playing == nil {
 		return st
 	}
@@ -840,8 +886,6 @@ func (m Model) statusState() statusView {
 	if pos, total, ok := m.queue.Position(); ok {
 		st.pos, st.total = pos, total
 	}
-	st.quality = qualityLabel(m.playing.level)
-	st.mode = modeLabel(m.queue.Mode())
 	st.nextUp = len(m.queue.NextUp())
 	return st
 }

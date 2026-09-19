@@ -22,8 +22,8 @@ const themesDir = "themes"
 const defaultThemeName = "default"
 
 // Colors 主题配色；值为 ANSI 色号（如 "15"）或十六进制颜色（如 "#ffffff"）。
+// 背景色不属于主题：所有主题统一纯黑背景（#000000）。
 type Colors struct {
-	Background string `json:"background"`
 	Foreground string `json:"foreground"`
 	Muted      string `json:"muted"`
 	Accent     string `json:"accent"`
@@ -34,9 +34,6 @@ type Colors struct {
 // 而符号允许用户显式置空，故 Glyphs 不做同样处理。
 func (c *Colors) fillDefaults() {
 	d := DefaultTheme().Colors
-	if c.Background == "" {
-		c.Background = d.Background
-	}
 	if c.Foreground == "" {
 		c.Foreground = d.Foreground
 	}
@@ -60,20 +57,31 @@ type Glyphs struct {
 	PlaylistCreated string `json:"playlist_created"`  // 创建的歌单标记
 	PlaylistStarred string `json:"playlist_starred"`  // 收藏的歌单标记
 	PopupHeaderRule string `json:"popup_header_rule"` // 弹窗分区标题两侧的装饰线
+	ProgressFill    string `json:"progress_fill"`     // 进度条已播放部分
+	ProgressHead    string `json:"progress_head"`     // 进度条头部（可为空）
+	ProgressEmpty   string `json:"progress_empty"`    // 进度条未播放部分
 }
 
-// Theme 主题：配色 + 符号。布局与尺寸由代码固定，不属于主题；
-// 歌词行数等数值是全局设定，统一在 config.json 中配置。
+// 边框样式的合法取值。
+const (
+	borderRounded = "rounded"
+	borderSquare  = "square"
+	borderNone    = "none"
+)
+
+// Theme 主题：配色 + 符号 + 边框样式（枚举）。布局与尺寸由代码固定，
+// 不属于主题；歌词行数等数值是全局设定，统一在 config.json 中配置。
 type Theme struct {
 	Colors Colors `json:"colors"`
 	Glyphs Glyphs `json:"glyphs"`
+	// Border 弹窗边框样式：rounded（默认）/ square / none。
+	Border string `json:"border,omitempty"`
 }
 
-// DefaultTheme 返回纯黑背景的默认主题。
+// DefaultTheme 返回默认主题（所有主题共享纯黑背景）。
 func DefaultTheme() Theme {
 	return Theme{
 		Colors: Colors{
-			Background: "#000000",
 			Foreground: "15",
 			Muted:      "8",
 			Accent:     "10",
@@ -86,12 +94,16 @@ func DefaultTheme() Theme {
 			PlaylistCreated: "✎",
 			PlaylistStarred: "♥",
 			PopupHeaderRule: "─",
+			ProgressFill:    "━",
+			ProgressHead:    "●",
+			ProgressEmpty:   "─",
 		},
+		Border: borderRounded,
 	}
 }
 
-// BackgroundColor 返回终端背景色。
-func (t Theme) BackgroundColor() color.Color { return lipgloss.Color(t.Colors.Background) }
+// BackgroundColor 返回终端背景色：固定纯黑，不随主题变化。
+func (t Theme) BackgroundColor() color.Color { return color.Black }
 
 // EnsureThemes 确保主题目录存在且默认主题文件已写入（便于用户复制修改）。
 func EnsureThemes(dir string) error {
@@ -124,6 +136,12 @@ func LoadTheme(dir, name string) (Theme, error) {
 		return DefaultTheme(), err
 	}
 	t.Colors.fillDefaults()
+	// 边框为枚举值，非法值回退默认。
+	switch t.Border {
+	case borderRounded, borderSquare, borderNone:
+	default:
+		t.Border = borderRounded
+	}
 	return t, nil
 }
 
@@ -154,14 +172,16 @@ type styles struct {
 	Error    lipgloss.Style
 	Status   lipgloss.Style
 
-	borderColor color.Color // 弹窗边框颜色
+	borderColor color.Color     // 弹窗边框颜色
+	border      lipgloss.Border // 弹窗边框样式
+	noBorder    bool            // 弹窗不使用边框
 	glyphs      Glyphs
 	cursorBlank string // 与光标符号等宽的空白，用于未选中行对齐
 	popupRule   string // 弹窗分区标题两侧的装饰线（双写）
 }
 
 func newStyles(t Theme) styles {
-	base := lipgloss.NewStyle().Background(t.BackgroundColor()).Foreground(lipgloss.Color(t.Colors.Foreground))
+	base := lipgloss.NewStyle().Foreground(lipgloss.Color(t.Colors.Foreground))
 	return styles{
 		Title:    base.Bold(true),
 		Item:     base,
@@ -171,10 +191,20 @@ func newStyles(t Theme) styles {
 		Status:   base.Foreground(lipgloss.Color(t.Colors.Accent)),
 
 		borderColor: lipgloss.Color(t.Colors.Muted),
+		border:      popupBorder(t.Border),
+		noBorder:    t.Border == borderNone,
 		glyphs:      t.Glyphs,
 		cursorBlank: strings.Repeat(" ", ansi.StringWidth(t.Glyphs.Cursor)),
 		popupRule:   t.Glyphs.PopupHeaderRule + t.Glyphs.PopupHeaderRule,
 	}
+}
+
+// popupBorder 将边框枚举映射为 lipgloss 边框。
+func popupBorder(name string) lipgloss.Border {
+	if name == borderSquare {
+		return lipgloss.NormalBorder()
+	}
+	return lipgloss.RoundedBorder()
 }
 
 // helpStyles 由 Theme 派生的帮助栏样式。
