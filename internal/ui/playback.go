@@ -3,8 +3,8 @@ package ui
 import (
 	tea "charm.land/bubbletea/v2"
 
-	"mountain-air/internal/mpris"
-	"mountain-air/internal/netease"
+	"molpe/internal/mpris"
+	"molpe/internal/netease"
 )
 
 type songURLFetchedMsg struct {
@@ -14,6 +14,9 @@ type songURLFetchedMsg struct {
 }
 
 type mprisEventMsg mpris.Event
+
+// playerEndedMsg 表示当前曲目自然播完（mpv end-file/eof），应自动连播。
+type playerEndedMsg struct{}
 
 // listenMprisCmd 等待一次桌面控制事件；服务关闭后返回 nil 消息并停止监听。
 func listenMprisCmd(svc *mpris.Service) tea.Cmd {
@@ -33,5 +36,13 @@ func fetchSongURLCmd(c *netease.Client, song netease.Song, quality string) tea.C
 	return func() tea.Msg {
 		u, err := c.SongURL(song.ID, quality)
 		return songURLFetchedMsg{song: song, url: u, err: err}
+	}
+}
+
+// listenEndCmd 等待一次 mpv 自然播完事件。
+func listenEndCmd(endCh <-chan struct{}) tea.Cmd {
+	return func() tea.Msg {
+		<-endCh
+		return playerEndedMsg{}
 	}
 }

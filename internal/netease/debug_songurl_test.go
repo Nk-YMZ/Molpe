@@ -11,8 +11,8 @@ import (
 
 	"github.com/go-musicfox/netease-music/service"
 
-	"mountain-air/internal/config"
-	"mountain-air/internal/netease"
+	"molpe/internal/config"
+	"molpe/internal/netease"
 )
 
 // weapiSongURL 通过 WEAPI（网页试听通道）请求播放地址，用于与 EAPI 结果对比。

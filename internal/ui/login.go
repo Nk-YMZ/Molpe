@@ -6,7 +6,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/skip2/go-qrcode"
 
-	"mountain-air/internal/netease"
+	"molpe/internal/netease"
 )
 
 // qrPollInterval 是二维码状态的轮询间隔。

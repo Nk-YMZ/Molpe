@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 )
 
-const appName = "mountain-air"
+const appName = "molpe"
 
 const configFile = "config.json"
 
@@ -19,18 +19,48 @@ type Config struct {
 	// Quality 音质偏好：standard / higher / exhigh / lossless / hires。
 	// 修改后重新启动程序生效。
 	Quality string `json:"quality"`
+	// AutoPlay 启动后自动继续播放上次退出时的歌曲；默认 false（恢复为待播状态）。
+	AutoPlay bool `json:"auto_play,omitempty"`
+	// Volume 播放音量百分比（0-100）；null 或缺失时使用默认值 100。
+	Volume *int `json:"volume,omitempty"`
+	// VolumeStep 音量调节步进百分比；<=0 或 >100 时使用默认值 5。
+	VolumeStep int `json:"volume_step,omitempty"`
 }
+
+const (
+	defaultVolume     = 100
+	defaultVolumeStep = 5
+)
 
 // DefaultConfig 返回默认配置。
 func DefaultConfig() Config {
 	return Config{Quality: "lossless"}
 }
 
-// LoadConfig 从 dir 下的 config.json 读取配置；文件不存在时返回默认配置。
+// EffectiveVolume 返回生效的音量百分比（0-100）。
+func (c Config) EffectiveVolume() int {
+	if c.Volume == nil || *c.Volume < 0 || *c.Volume > 100 {
+		return defaultVolume
+	}
+	return *c.Volume
+}
+
+// EffectiveVolumeStep 返回生效的音量调节步进百分比。
+func (c Config) EffectiveVolumeStep() int {
+	if c.VolumeStep <= 0 || c.VolumeStep > 100 {
+		return defaultVolumeStep
+	}
+	return c.VolumeStep
+}
+
+// LoadConfig 从 dir 下的 config.json 读取配置；文件不存在时写入并返回默认配置。
 func LoadConfig(dir string) (Config, error) {
 	cfg := DefaultConfig()
 	data, err := os.ReadFile(filepath.Join(dir, configFile))
 	if errors.Is(err, fs.ErrNotExist) {
+		if werr := SaveConfig(dir, cfg); werr != nil {
+			return cfg, fmt.Errorf("写入默认配置失败: %w", werr)
+		}
 		return cfg, nil
 	}
 	if err != nil {
@@ -44,15 +74,35 @@ func LoadConfig(dir string) (Config, error) {
 
 // SaveConfig 将配置写入 dir 下的 config.json。
 func SaveConfig(dir string, cfg Config) error {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("创建配置目录失败: %w", err)
+	return SaveJSON(dir, configFile, cfg)
+}
+
+// LoadJSON 从 dir 下的 name 文件读取 JSON 到 v；文件不存在时返回 nil（v 保持不变）。
+func LoadJSON(dir, name string, v any) error {
+	data, err := os.ReadFile(filepath.Join(dir, name))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
 	}
-	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
-		return fmt.Errorf("序列化配置失败: %w", err)
+		return fmt.Errorf("读取 %s 失败: %w", name, err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, configFile), data, 0o644); err != nil {
-		return fmt.Errorf("写入配置文件失败: %w", err)
+	if err := json.Unmarshal(data, v); err != nil {
+		return fmt.Errorf("解析 %s 失败: %w", name, err)
+	}
+	return nil
+}
+
+// SaveJSON 将 v 以 JSON 写入 dir 下的 name 文件（目录不存在时自动创建）。
+func SaveJSON(dir, name string, v any) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("创建目录 %s 失败: %w", dir, err)
+	}
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return fmt.Errorf("序列化 %s 失败: %w", name, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), data, 0o644); err != nil {
+		return fmt.Errorf("写入 %s 失败: %w", name, err)
 	}
 	return nil
 }

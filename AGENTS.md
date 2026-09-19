@@ -1,4 +1,4 @@
-# AGENTS.md — 山歌（Mountain Air）
+# AGENTS.md — 木末（Molpe）
 
 ## 项目定位
 
@@ -38,7 +38,7 @@ internal/ui/         Bubble Tea TUI：根模型 + 登录/歌单/歌曲页、主�
 界面约定：纯键盘操作（不为鼠标做额外设计）；默认主题为纯黑背景（#000000），
 配色集中在 `internal/ui/theme.go`，通过 Theme 结构预留多主题扩展。
 
-模块名为 `mountain-air`，远程仓库 `git@github.com:Nk-YMZ/Mountain-Air.git`（主分支 `main`）。后续按需要新增 `internal/queue`（播放队列）等，不提前创建。
+模块名为 `molpe`，远程仓库 `git@github.com:Nk-YMZ/Molpe.git`（主分支 `main`）。播放队列位于 `internal/queue`，其余模块按需新增，不提前创建。
 
 ## 已知坑：网易云风控（-462）
 
@@ -93,7 +93,7 @@ internal/ui/         Bubble Tea TUI：根模型 + 登录/歌单/歌曲页、主�
 - 启动时检查登录态（已登录则先刷新 Cookie 再进主界面）
 - 未登录展示终端二维码（每 2s 轮询状态；800 过期 / 801 等待 / 802 待确认 / 803 成功）
 - `r` 手动刷新二维码；`q`/Ctrl+C 退出
-- Cookie 持久化到 `$XDG_DATA_HOME/mountain-air/cookies`（0600）
+- Cookie 持久化到 `$XDG_DATA_HOME/molpe/cookies`（0600）
 
 歌单浏览已实现：
 
@@ -101,23 +101,36 @@ internal/ui/         Bubble Tea TUI：根模型 + 登录/歌单/歌曲页、主�
 - j/k/↑/↓ 移动，g/G 顶部/底部，enter 进入歌单查看歌曲，b/esc 返回，r 刷新
 - 歌曲列表展示 歌名 - 艺术家 与时长（`PlaylistTrackAllService` 一次拉全）
 
-基础播放已实现（尚无队列）：
+基础播放与播放队列已实现：
 
-- 歌曲页 enter 播放，space 播放/暂停
-- 底部状态栏显示当前播放曲目与接口实际返回的音质
+- 歌曲页 enter 播放，space 播放/暂停；]/[ 下一首/上一首；n 加入“下一首播放”队列；
+  m 在顺序/列表循环/随机间切换；+/- 调整音量；b/esc 返回；
+  底部状态栏显示当前曲目、音质、播放模式、音量与待播数量
+- 快捷键集中在 `internal/ui` 的 `defaultKeyMap()`（Model.keys 字段），
+  为后续配置文件自定义预留；状态栏操作提示约 3 秒后自动恢复为播放信息
+- 配置项（`config.json`）：`quality` 音质、`auto_play` 启动自动开播（默认 false，恢复为待播）、
+  `volume` 音量（0-100，缺省 100，调整即固化回配置文件）、`volume_step` 调节步进（默认 5）
+- 队列核心在 `internal/queue`（纯逻辑、可单测，不依赖网络与外部进程）：
+  - 顺序/列表循环/随机三种模式；随机为除当前曲外在歌单内等概率选取（不做预打乱），
+    单曲歌单重复播放
+  - 历史队列严格记录实际播放顺序（默认上限 100 首，跨歌单保留），
+    上一首/下一首先沿历史前后移动，再消费“下一首播放”队列，最后按模式选取
+  - “下一首播放”队列按添加时间 FIFO，任何模式下优先级最高；手动切歌/切歌单时保留
+  - 行为参数集中在 `queue.Options`（如 HistoryLimit），为配置化预留
+  - 队列快照（歌单/历史/位置/下一首队列/模式）持久化到 `$XDG_DATA_HOME/molpe/queue.json`，
+    每次变动即写入；启动时恢复，上次播放的歌曲恢复为待播（暂停）状态，按 space 或桌面播放键开始
+- mpv 通过独立 IPC 长连接监听 `end-file`（仅 reason=eof）实现自然播完自动连播
 - 播放地址走 EAPI（官方客户端通道）：WEAPI 试听接口对会员歌曲的 Hi-Res
   会错误标注甚至混发文件，EAPI 的等级与文件均与实际一致
-- 音质从面向用户的 `$XDG_CONFIG_HOME/mountain-air/config.json` 读取，支持
+- 音质从面向用户的 `$XDG_CONFIG_HOME/molpe/config.json` 读取，支持
   `standard`、`higher`、`exhigh`、`lossless`、`hires`
 - 运行期间不提供音质切换弹窗；修改配置后重新启动程序生效
 - Hi-Res 实际状态会结合 mpv 加载后的采样率/位深校正，避免接口返回等级与实际流参数不一致
 - 退出 TUI 时关闭 mpv 子进程并清理 IPC socket
 
-MPRIS 桌面集成已实现（总线名 `org.mpris.MediaPlayer2.mountain-air`）：
+MPRIS 桌面集成已实现（总线名 `org.mpris.MediaPlayer2.molpe`）：
 
 - 向系统暴露元数据（标题/艺术家/专辑/时长/封面 `mpris:artUrl`）与播放状态，
   KDE 媒体组件可正常显示封面并控制
-- 接收系统媒体控制（Play/Pause/PlayPause/Stop，映射为播放/暂停；无队列故不支持切歌）
+- 接收系统媒体控制（Play/Pause/PlayPause/Stop/Next/Previous，切歌走队列逻辑）
 - D-Bus 不可用时降级运行，不影响主体功能
-
-播放队列尚未实现。

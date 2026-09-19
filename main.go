@@ -7,9 +7,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"mountain-air/internal/config"
-	"mountain-air/internal/netease"
-	"mountain-air/internal/ui"
+	"molpe/internal/config"
+	"molpe/internal/netease"
+	"molpe/internal/ui"
 )
 
 func main() {
@@ -27,7 +27,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	p := tea.NewProgram(ui.New(client, cfg.Quality))
+	p := tea.NewProgram(ui.New(client, cfg, dirs))
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "运行失败:", err)
 		os.Exit(1)

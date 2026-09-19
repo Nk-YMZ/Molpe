@@ -13,7 +13,7 @@ import (
 
 // 总线名称与对象路径（MPRIS2 规范）。
 const (
-	busName     = "org.mpris.MediaPlayer2.mountain-air"
+	busName     = "org.mpris.MediaPlayer2.molpe"
 	objectPath  = dbus.ObjectPath("/org/mpris/MediaPlayer2")
 	ifaceRoot   = "org.mpris.MediaPlayer2"
 	ifacePlayer = "org.mpris.MediaPlayer2.Player"
@@ -28,6 +28,8 @@ const (
 	EventPlay
 	EventPause
 	EventStop
+	EventNext
+	EventPrevious
 )
 
 // Track 是传递给桌面环境的曲目元数据。
@@ -50,6 +52,7 @@ type Service struct {
 
 	mu       sync.Mutex
 	status   string
+	volume   float64 // 0.0-1.0
 	metadata map[string]dbus.Variant
 }
 
@@ -64,6 +67,7 @@ func New(positionFn func() (float64, error)) (*Service, error) {
 		events:     make(chan Event, 8),
 		positionFn: positionFn,
 		status:     "Stopped",
+		volume:     1.0,
 		metadata:   emptyMetadata(),
 	}
 
@@ -145,6 +149,14 @@ func (s *Service) SetStatus(status string) {
 	s.emitChanged(ifacePlayer, "PlaybackStatus")
 }
 
+// SetVolume 更新音量（0.0-1.0）并通知桌面环境。
+func (s *Service) SetVolume(v float64) {
+	s.mu.Lock()
+	s.volume = v
+	s.mu.Unlock()
+	s.emitChanged(ifacePlayer, "Volume")
+}
+
 func (s *Service) emitChanged(iface, name string) {
 	value, err := s.get(iface, name)
 	if err != nil {
@@ -165,9 +177,9 @@ func (s *Service) get(iface, name string) (dbus.Variant, *dbus.Error) {
 		case "CanQuit", "CanRaise", "HasTrackList":
 			return dbus.MakeVariant(false), nil
 		case "Identity":
-			return dbus.MakeVariant("Mountain Air"), nil
+			return dbus.MakeVariant("木末 Molpe"), nil
 		case "DesktopEntry":
-			return dbus.MakeVariant("mountain-air"), nil
+			return dbus.MakeVariant("molpe"), nil
 		case "SupportedUriSchemes", "SupportedMimeTypes":
 			return dbus.MakeVariant([]string{}), nil
 		}
@@ -179,13 +191,17 @@ func (s *Service) get(iface, name string) (dbus.Variant, *dbus.Error) {
 			return dbus.MakeVariant(s.metadata), nil
 		case "Position":
 			return dbus.MakeVariant(s.positionMicros()), nil
-		case "Rate", "Volume":
+		case "Rate":
 			return dbus.MakeVariant(1.0), nil
+		case "Volume":
+			return dbus.MakeVariant(s.volume), nil
 		case "MinimumRate", "MaximumRate":
 			return dbus.MakeVariant(1.0), nil
 		case "CanControl", "CanPlay", "CanPause":
 			return dbus.MakeVariant(true), nil
-		case "CanGoNext", "CanGoPrevious", "CanSeek":
+		case "CanGoNext", "CanGoPrevious":
+			return dbus.MakeVariant(true), nil
+		case "CanSeek":
 			return dbus.MakeVariant(false), nil
 		}
 	}
@@ -263,11 +279,11 @@ func (s *Service) Pause() *dbus.Error { s.push(EventPause); return nil }
 // Stop 停止播放（按暂停处理）。
 func (s *Service) Stop() *dbus.Error { s.push(EventStop); return nil }
 
-// Next 暂不支持（无队列），空实现。
-func (s *Service) Next() *dbus.Error { return nil }
+// Next 请求播放下一首。
+func (s *Service) Next() *dbus.Error { s.push(EventNext); return nil }
 
-// Previous 暂不支持（无队列），空实现。
-func (s *Service) Previous() *dbus.Error { return nil }
+// Previous 请求播放上一首。
+func (s *Service) Previous() *dbus.Error { s.push(EventPrevious); return nil }
 
 // SeekOffset 对应 MPRIS 的 Seek 方法，暂不支持，空实现。
 func (s *Service) SeekOffset(offset int64) *dbus.Error { return nil }

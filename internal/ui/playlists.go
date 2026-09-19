@@ -3,7 +3,7 @@ package ui
 import (
 	tea "charm.land/bubbletea/v2"
 
-	"mountain-air/internal/netease"
+	"molpe/internal/netease"
 )
 
 // playlistsPage 是歌单列表页。

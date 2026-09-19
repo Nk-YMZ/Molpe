@@ -33,7 +33,7 @@ func TestService(t *testing.T) {
 	if err := obj.Call(ifaceProps+".Get", 0, ifaceRoot, "Identity").Store(&identity); err != nil {
 		t.Fatal(err)
 	}
-	if identity.Value() != "Mountain Air" {
+	if identity.Value() != "木末 Molpe" {
 		t.Errorf("Identity = %v", identity.Value())
 	}
 

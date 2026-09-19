@@ -1,4 +1,4 @@
-module mountain-air
+module molpe
 
 go 1.27.1
 
@@ -7,6 +7,7 @@ require (
 	charm.land/bubbletea/v2 v2.0.9
 	charm.land/lipgloss/v2 v2.0.6
 	github.com/go-musicfox/netease-music v1.6.0
+	github.com/godbus/dbus/v5 v5.2.2
 	github.com/imroc/req/v3 v3.61.0
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/telanflow/cookiejar v0.0.0-20190719062046-114449e86aa5
@@ -26,7 +27,6 @@ require (
 	github.com/cnsilvan/UnblockNeteaseMusic v0.0.0-20230310083816-92b59c95a366 // indirect
 	github.com/forgoer/openssl v1.6.0 // indirect
 	github.com/go-musicfox/requests v0.2.3 // indirect
-	github.com/godbus/dbus/v5 v5.2.2 // indirect
 	github.com/gomodule/redigo v1.9.3 // indirect
 	github.com/google/go-querystring v1.2.0 // indirect
 	github.com/icholy/digest v1.2.0 // indirect

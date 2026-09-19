@@ -19,8 +19,9 @@ type Player struct {
 	cmd    *exec.Cmd
 	socket string
 
-	mu     sync.Mutex
-	closed bool
+	mu         sync.Mutex
+	closed     bool
+	endWatched bool
 }
 
 // Start 启动 mpv 子进程并等待 IPC socket 就绪。
@@ -29,7 +30,7 @@ func Start() (*Player, error) {
 		return nil, fmt.Errorf("未找到 mpv，请先安装: %w", err)
 	}
 
-	socket := filepath.Join(os.TempDir(), fmt.Sprintf("mountain-air-mpv-%d.sock", os.Getpid()))
+	socket := filepath.Join(os.TempDir(), fmt.Sprintf("molpe-mpv-%d.sock", os.Getpid()))
 	_ = os.Remove(socket)
 
 	cmd := exec.Command("mpv",
@@ -74,6 +75,54 @@ func (p *Player) Play(url string) error {
 func (p *Player) SetPause(paused bool) error {
 	_, err := p.command("set_property", "pause", paused)
 	return err
+}
+
+// SetVolume 设置音量百分比（0-100）。
+func (p *Player) SetVolume(v int) error {
+	_, err := p.command("set_property", "volume", v)
+	return err
+}
+
+// SetEndCallback 注册曲目自然播完（end-file 且原因为 eof）时的回调，
+// 用于队列自动连播。回调在独立 goroutine 中触发；重复调用仅首次生效。
+func (p *Player) SetEndCallback(cb func()) {
+	p.mu.Lock()
+	if p.closed || p.endWatched {
+		p.mu.Unlock()
+		return
+	}
+	p.endWatched = true
+	p.mu.Unlock()
+	go p.watchEnd(cb)
+}
+
+// watchEnd 持有独立的 IPC 长连接监听 end-file 事件；
+// socket 关闭或 mpv 退出时 goroutine 自动结束。
+func (p *Player) watchEnd(cb func()) {
+	conn, err := net.Dial("unix", p.socket)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	if err := json.NewEncoder(conn).Encode(map[string]any{
+		"command": []any{"enable_event", "end-file"},
+	}); err != nil {
+		return
+	}
+	dec := json.NewDecoder(conn)
+	for {
+		var ev struct {
+			Event  string `json:"event"`
+			Reason string `json:"reason"`
+		}
+		if err := dec.Decode(&ev); err != nil {
+			return
+		}
+		// 仅响应自然播完；手动切歌产生的 stop/redirect 等事件不触发连播。
+		if ev.Event == "end-file" && ev.Reason == "eof" && cb != nil {
+			cb()
+		}
+	}
 }
 
 func (p *Player) command(args ...any) (json.RawMessage, error) {
