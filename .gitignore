@@ -1,0 +1,12 @@
+# 构建产物
+/mountain-air
+*.test
+*.out
+
+# 敏感数据：Cookie、凭据，严禁提交
+cookie*
+*.cookie
+
+# 编辑器与系统文件
+*.swp
+.DS_Store
