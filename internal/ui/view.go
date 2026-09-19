@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -16,10 +15,32 @@ import (
 //
 // 新增功能的渲染扩展点：viewState 加字段 + buildViewState 填充 +
 // 一个 renderXxx 函数 + 需要时在 Theme 增加配色/符号 token。
+//
+// 视觉语言：纯字符栅格。头部品牌行 + 整宽细分隔线确立秩序；列表为
+// 对齐的等宽列（标记 / 主文本 / 次文本 / 右列）；明暗三级（faint <
+// muted < foreground）承担层次，双强调色小剂量点缀；弹窗以字符
+// 阴影浮于纯黑背景之上。
 
-// listView 列表快照：items 直接引用交互层的切片，不做拷贝。
+// chromeFixed 是正文区之外固定占用的行数：
+// 头部(1) + 分隔线(1) + 空行(1) + 进度(1) + 状态(1) + 帮助(1)。
+// 歌词区行数（lyricLines）与歌词区上下间距（gapAbove/gapBelow，来自配置）另计。
+// 交互层按同一常量计算列表高度。
+const chromeFixed = 6
+
+// listItemView 列表项快照：按等宽列网格渲染
+// （光标 / 序号 / 标记 / 主文本列 / 次文本列 / 右列），
+// 切片直接引用交互层的数据，不做拷贝。
+type listItemView struct {
+	index     string // 序号（右对齐，微光），可为空
+	marker    string // 前置标记（如歌单的创建/收藏符号），可为空
+	primary   string // 主文本（歌名、歌单名）
+	secondary string // 次文本（艺术家），弱化显示，可为空
+	right     string // 右列（时长、曲目数），微光显示，可为空
+}
+
+// listView 列表快照。
 type listView struct {
-	items  []string
+	items  []listItemView
 	cursor int
 	offset int
 	height int // 可见行数，<=0 表示不限制
@@ -33,20 +54,22 @@ const (
 	bodyLogin                  // 登录页（二维码）
 )
 
-// bodyView 正文区快照：title 非空时先渲染标题（歌曲页）。
+// bodyView 正文区快照：title 非空时先渲染标题行（歌曲页）。
 type bodyView struct {
-	kind   bodyKind
-	title  string
-	notice string
-	isErr  bool
-	list   listView
-	login  loginView
+	kind      bodyKind
+	title     string
+	titleNote string // 标题右侧的弱化附注（如曲目数）
+	notice    string
+	isErr     bool
+	list      listView
+	login     loginView
 }
 
 type loginView struct {
 	art    string // 二维码字符画
 	status string
 	notice string
+	frame  int // 状态行动画帧序号
 }
 
 // statusView 状态栏快照：只保留正在播放的核心信息，
@@ -55,7 +78,7 @@ type statusView struct {
 	err     string // 非空时整行替换
 	playing bool
 	paused  bool
-	track   string // "歌名 - 艺术家"
+	track   string // "歌名 - 艺术家"（可能处于逐字出现中，仅含已出现部分）
 	pos     int    // 歌单内位置（从 1 计），0 表示不在歌单
 	total   int
 	nextUp  int // 待播数量
@@ -98,6 +121,8 @@ type viewState struct {
 	lyrics     []string // 歌词原文（未截断）
 	lyricCur   int      // 当前歌词行下标，-1 表示尚未到第一句
 	lyricLines int      // 歌词显示总行数
+	gapAbove   int      // 歌词区与正文区之间的空行数
+	gapBelow   int      // 歌词区与进度条之间的空行数
 
 	progress progressView
 	status   statusView
@@ -108,15 +133,9 @@ type viewState struct {
 	helpBindings []key.Binding
 }
 
-// staticHelpMap 将快照中的按键绑定适配为 help.KeyMap。
-type staticHelpMap struct{ bindings []key.Binding }
-
-func (s staticHelpMap) ShortHelp() []key.Binding  { return s.bindings }
-func (s staticHelpMap) FullHelp() [][]key.Binding { return [][]key.Binding{s.bindings} }
-
 // renderRoot 渲染整屏内容；弹窗打开时正文被弹窗替换。
-func renderRoot(s viewState, sty styles, h help.Model) string {
-	content := renderContent(s, sty, h)
+func renderRoot(s viewState, sty styles) string {
+	content := renderContent(s, sty)
 	switch {
 	case s.popup != nil:
 		content = renderQueuePopup(*s.popup, sty, s.width, s.height)
@@ -126,25 +145,29 @@ func renderRoot(s viewState, sty styles, h help.Model) string {
 	return content
 }
 
-func renderContent(s viewState, sty styles, h help.Model) string {
-	// 栅格固定：正文区高度 = 总高 - 头部(1) - 空行(2) - 歌词(n) - 进度(1) - 状态(1) - 帮助(1)，
+func renderContent(s viewState, sty styles) string {
+	// 栅格固定：正文区高度 = 总高 - chromeFixed - 歌词行数 - 上下间距，
 	// 底部区块（歌词/进度/状态/帮助）锚定在屏幕底部，不随正文内容多少浮动。
-	bodyH := max(1, s.height-6-s.lyricLines)
-	body := renderBody(s.body, sty)
-	if s.body.kind == bodyLogin {
-		// 登录页二维码截断后将无法扫描，只补空行不截断。
-		body = padHeight(body, bodyH)
-	} else {
-		body = fixHeight(body, bodyH)
+	bodyH := max(1, s.height-chromeFixed-s.lyricLines-s.gapAbove-s.gapBelow)
+	blocks := []string{
+		renderHeader(s.width, s.headerRight, sty),
+		renderRule(s.width, sty),
+		"",
+		renderBody(s.body, sty, s.width, bodyH),
 	}
-	return lipgloss.JoinVertical(lipgloss.Left,
-		renderHeader(s.width, s.headerRight, sty), "",
-		body, "",
-		renderLyrics(s.lyrics, s.lyricCur, s.lyricLines, s.width, sty),
+	for range s.gapAbove {
+		blocks = append(blocks, "")
+	}
+	blocks = append(blocks, renderLyrics(s.lyrics, s.lyricCur, s.lyricLines, s.width, sty))
+	for range s.gapBelow {
+		blocks = append(blocks, "")
+	}
+	blocks = append(blocks,
 		renderProgress(s.progress, s.width, sty),
 		renderStatus(s.status, sty),
-		h.View(staticHelpMap{s.helpBindings}),
+		renderHint(s.helpBindings, s.width, sty),
 	)
+	return lipgloss.JoinVertical(lipgloss.Left, blocks...)
 }
 
 // fixHeight 将内容钳制为固定行数：超出截断，不足补空行。
@@ -168,69 +191,236 @@ func padHeight(content string, lines int) string {
 	return strings.Join(ls, "\n")
 }
 
-// renderHeader 渲染头部：左侧标题，右侧次要信息（弱化）；
-// 宽度不足时舍弃右侧信息，保证标题完整。
-func renderHeader(width int, right string, sty styles) string {
-	const title = "木末 Molpe"
-	if right == "" || width <= 0 {
-		return sty.Title.Render(title)
+// centerLine 将单行内容水平居中于 width 宽度内。
+func centerLine(s string, width int) string {
+	pad := (width - ansi.StringWidth(s)) / 2
+	if pad <= 0 {
+		return s
 	}
-	gap := width - ansi.StringWidth(title) - ansi.StringWidth(right)
-	if gap < 2 {
-		return sty.Title.Render(title)
-	}
-	return sty.Title.Render(title) + strings.Repeat(" ", gap) + sty.Muted.Render(right)
+	return strings.Repeat(" ", pad) + s
 }
 
-func renderBody(b bodyView, sty styles) string {
-	var content string
+// renderHeader 渲染头部：左侧品牌标记 + 名称，右侧次要信息（微光）；
+// 宽度不足时舍弃右侧信息，保证品牌完整。
+func renderHeader(width int, right string, sty styles) string {
+	mark := sty.glyphs.HeaderMark
+	left := sty.Accent2.Render(mark) + " " + sty.Title.Render("木末") + sty.Faint.Render(" molpe")
+	lw := ansi.StringWidth(mark) + 1 + ansi.StringWidth("木末 molpe")
+	if right == "" || width <= 0 {
+		return left
+	}
+	gap := width - lw - ansi.StringWidth(right)
+	if gap < 2 {
+		return left
+	}
+	return left + strings.Repeat(" ", gap) + sty.Faint.Render(right)
+}
+
+// renderRule 渲染头部下方的整宽细分隔线（微光）。
+func renderRule(width int, sty styles) string {
+	if width <= 0 || sty.glyphs.Rule == "" {
+		return ""
+	}
+	return sty.Faint.Render(strings.Repeat(sty.glyphs.Rule, width))
+}
+
+// renderBody 渲染正文区并钳制到固定行数；提示类内容在区域内居中，
+// 登录页二维码只补不截（截断将无法扫描）。
+func renderBody(b bodyView, sty styles, width, bodyH int) string {
 	switch b.kind {
 	case bodyLogin:
-		content = renderLogin(b.login)
+		return padHeight(renderLogin(b.login, sty, width), bodyH)
 	case bodyNotice:
+		notice := sty.Faint.Render(b.notice)
 		if b.isErr {
-			content = sty.Error.Render(b.notice)
-		} else {
-			content = sty.Muted.Render(b.notice)
+			notice = sty.Error.Render(b.notice)
 		}
+		return fixHeight(centerLine(notice, width), bodyH)
 	default:
-		content = renderList(b.list, sty)
+		content := renderList(b.list, sty, width)
+		if b.title != "" {
+			head := sty.Accent2.Render("▍ ") + sty.Title.Render(b.title)
+			if b.titleNote != "" {
+				head += sty.Faint.Render("  " + b.titleNote)
+			}
+			// 标题与列表块左缘对齐（列表块居中时一并缩进）。
+			if ind := listIndent(b.list, sty, width); ind > 0 {
+				head = strings.Repeat(" ", ind) + head
+			}
+			content = lipgloss.JoinVertical(lipgloss.Left, head, "", content)
+		}
+		return fixHeight(content, bodyH)
 	}
-	if b.title == "" {
-		return content
-	}
-	return lipgloss.JoinVertical(lipgloss.Left, sty.Title.Render(b.title), "", content)
 }
 
-func renderLogin(l loginView) string {
-	var s string
+// loginFrames 登录页状态行的块状旋转帧。
+var loginFrames = []string{"▖", "▘", "▝", "▗"}
+
+// renderLogin 渲染登录页：二维码装框居中，下方为带动画帧的状态行。
+func renderLogin(l loginView, sty styles, width int) string {
+	var blocks []string
 	if l.notice != "" {
-		s = l.notice + "\n\n"
+		blocks = append(blocks, centerLine(sty.Muted.Render(l.notice), width), "")
 	}
 	if l.art != "" {
-		s += l.art + "\n"
+		box := lipgloss.NewStyle().Padding(0, 1)
+		if !sty.noBorder {
+			box = box.Border(sty.border).BorderForeground(sty.borderColor)
+		}
+		for _, line := range strings.Split(box.Render(l.art), "\n") {
+			blocks = append(blocks, centerLine(line, width))
+		}
+		blocks = append(blocks, "")
 	}
-	return s + l.status
+	status := l.status
+	if l.art != "" && status != "" {
+		frame := loginFrames[l.frame%len(loginFrames)]
+		status = sty.Accent2.Render(frame) + " " + sty.Muted.Render(status)
+	} else if status != "" {
+		status = sty.Muted.Render(status)
+	}
+	blocks = append(blocks, centerLine(status, width))
+	return strings.Join(blocks, "\n")
 }
 
-func renderList(l listView, sty styles) string {
+// listMaxWidth 列表块最大宽度；宽屏时列表块居中、两侧留白，避免铺满整行。
+const listMaxWidth = 72
+
+// listGeom 列式列表的几何参数：各列宽度、块总宽与水平居中缩进。
+type listGeom struct {
+	cursorW, indexW, markerW int
+	nameW, artistW, rightW   int
+	blockW, indent           int
+}
+
+// padLeft / padRight 按显示宽度补齐空格。
+func padLeft(s string, w int) string {
+	if d := w - ansi.StringWidth(s); d > 0 {
+		return strings.Repeat(" ", d) + s
+	}
+	return s
+}
+
+func padRight(s string, w int) string {
+	if d := w - ansi.StringWidth(s); d > 0 {
+		return s + strings.Repeat(" ", d)
+	}
+	return s
+}
+
+// measureList 计算可见项的列宽与块宽：列宽取可见项内容的最大值
+// （受剩余空间约束，主文本优先、次文本过窄则整列舍弃）；
+// 块宽不超过 listMaxWidth，居中缩进由块宽与窗口宽度决定。
+func measureList(vis []listItemView, sty styles, width int) listGeom {
+	g := listGeom{cursorW: ansi.StringWidth(sty.glyphs.Cursor)}
+	nameMax, artistMax := 0, 0
+	for _, it := range vis {
+		g.indexW = max(g.indexW, ansi.StringWidth(it.index))
+		g.markerW = max(g.markerW, ansi.StringWidth(it.marker))
+		nameMax = max(nameMax, ansi.StringWidth(it.primary))
+		artistMax = max(artistMax, ansi.StringWidth(it.secondary))
+		g.rightW = max(g.rightW, ansi.StringWidth(it.right))
+	}
+	avail := width
+	if avail <= 0 || avail > listMaxWidth {
+		avail = listMaxWidth
+	}
+	avail -= g.cursorW
+	if g.indexW > 0 {
+		avail -= g.indexW + 1
+	}
+	if g.markerW > 0 {
+		avail -= g.markerW + 1
+	}
+	if g.rightW > 0 {
+		avail -= g.rightW + 3
+	}
+	nameCap := avail
+	if artistMax > 0 {
+		nameCap = max(12, avail*3/5)
+	}
+	g.nameW = max(0, min(nameMax, nameCap, avail))
+	if artistMax > 0 {
+		g.artistW = min(artistMax, avail-g.nameW-3)
+		if g.artistW < 6 {
+			// 次文本列过窄不如不留，把空间还给主文本。
+			g.artistW = 0
+			g.nameW = max(0, min(nameMax, avail))
+		}
+	}
+	g.blockW = g.cursorW
+	if g.indexW > 0 {
+		g.blockW += g.indexW + 1
+	}
+	if g.markerW > 0 {
+		g.blockW += g.markerW + 1
+	}
+	g.blockW += g.nameW
+	if g.artistW > 0 {
+		g.blockW += 3 + g.artistW
+	}
+	if g.rightW > 0 {
+		g.blockW += 3 + g.rightW
+	}
+	if width > g.blockW {
+		g.indent = (width - g.blockW) / 2
+	}
+	return g
+}
+
+// listIndent 返回列表块水平居中的缩进量（供正文标题与列表块左缘对齐）。
+func listIndent(l listView, sty styles, width int) int {
 	if len(l.items) == 0 {
-		return sty.Muted.Render("（空）")
+		return 0
 	}
 	end := len(l.items)
 	if l.height > 0 && l.offset+l.height < end {
 		end = l.offset + l.height
 	}
+	return measureList(l.items[l.offset:end], sty, width).indent
+}
+
+// renderList 渲染等宽列网格列表：光标 / 序号 / 标记 / 主文本列 / 次文本列 / 右列，
+// 整块限宽并在宽屏下水平居中；序号、标记、右列为微光，次文本弱化，
+// 选中行光标与主文本用主强调色加粗。窗口尺寸未知（width<=0）时按最大宽度排版。
+func renderList(l listView, sty styles, width int) string {
+	if len(l.items) == 0 {
+		return sty.Faint.Render("（空）")
+	}
+	end := len(l.items)
+	if l.height > 0 && l.offset+l.height < end {
+		end = l.offset + l.height
+	}
+	vis := l.items[l.offset:end]
+	g := measureList(vis, sty, width)
+	indent := strings.Repeat(" ", g.indent)
 	var b strings.Builder
-	for i := l.offset; i < end; i++ {
-		line, style := sty.cursorBlank+l.items[i], sty.Item
-		if i == l.cursor {
-			line, style = sty.glyphs.Cursor+l.items[i], sty.Selected
-		}
-		if i > l.offset {
+	for i, it := range vis {
+		if i > 0 {
 			b.WriteByte('\n')
 		}
-		b.WriteString(style.Render(line))
+		b.WriteString(indent)
+		idx := l.offset + i
+		mainStyle := sty.Item
+		cursor := sty.cursorBlank
+		if idx == l.cursor {
+			mainStyle = sty.Selected
+			cursor = sty.glyphs.Cursor
+		}
+		b.WriteString(mainStyle.Render(cursor))
+		if g.indexW > 0 {
+			b.WriteString(sty.Faint.Render(padLeft(it.index, g.indexW) + " "))
+		}
+		if g.markerW > 0 {
+			b.WriteString(sty.Faint.Render(padRight(it.marker, g.markerW) + " "))
+		}
+		b.WriteString(mainStyle.Render(padRight(ansi.Truncate(it.primary, g.nameW, "…"), g.nameW)))
+		if g.artistW > 0 {
+			b.WriteString("   " + sty.Muted.Render(padRight(ansi.Truncate(it.secondary, g.artistW, "…"), g.artistW)))
+		}
+		if g.rightW > 0 {
+			b.WriteString("   " + sty.Faint.Render(padLeft(it.right, g.rightW)))
+		}
 	}
 	return b.String()
 }
@@ -239,31 +429,33 @@ func renderList(l listView, sty styles) string {
 // 仅错误提示会整行替换。
 func renderStatus(st statusView, sty styles) string {
 	if st.err != "" {
-		return sty.Error.Render(st.err)
+		return sty.Error.Render("✗ " + st.err)
 	}
-	var status string
 	if !st.playing {
-		status = sty.Muted.Render("未在播放")
-	} else {
-		icon := sty.glyphs.Playing
-		if st.paused {
-			icon = sty.glyphs.Paused
-		}
-		status = sty.Status.Render(icon + st.track)
-		if st.pos > 0 {
-			status += sty.Muted.Render(fmt.Sprintf(" (%d/%d)", st.pos, st.total))
-		}
-		if st.nextUp > 0 {
-			status += sty.Muted.Render(fmt.Sprintf(" [待播 %d]", st.nextUp))
-		}
+		return sty.Faint.Render("♪ 未在播放")
+	}
+	icon := sty.glyphs.Playing
+	if st.paused {
+		icon = sty.glyphs.Paused
+	}
+	trackStyle := sty.Title
+	if st.paused {
+		trackStyle = sty.Muted
+	}
+	status := sty.Accent2.Render(icon) + trackStyle.Render(st.track)
+	if st.pos > 0 {
+		status += sty.Faint.Render(fmt.Sprintf("  %d/%d", st.pos, st.total))
+	}
+	if st.nextUp > 0 {
+		status += sty.Faint.Render(fmt.Sprintf("  待播 %d", st.nextUp))
 	}
 	if st.note != "" {
-		status += sty.Muted.Render(" · " + st.note)
+		status += sty.Faint.Render("  ·  " + st.note)
 	}
 	return status
 }
 
-// renderProgress 渲染播放进度条：已播放部分 + 头部 + 未播放部分，
+// renderProgress 渲染播放进度条：像素块状填充 + 热端 + 微光空余部分，
 // 两端为时间标签；无播放或时长未知时整行留空（保持栅格稳定）。
 func renderProgress(p progressView, width int, sty styles) string {
 	if !p.ok || p.dur <= 0 {
@@ -273,17 +465,26 @@ func renderProgress(p progressView, width int, sty styles) string {
 	left, right := formatTime(pos), formatTime(p.dur)
 	barW := width - 14 // 两侧时间标签与空格
 	if barW < 8 {
-		return sty.Muted.Render(left + " / " + right)
+		return sty.Faint.Render(left + " / " + right)
 	}
-	filled := int(pos / p.dur * float64(barW))
-	var fillStr string
-	if head := sty.glyphs.ProgressHead; head != "" && filled > 0 {
-		fillStr = strings.Repeat(sty.glyphs.ProgressFill, filled-1) + head
-	} else if filled > 0 {
-		fillStr = strings.Repeat(sty.glyphs.ProgressFill, filled)
+	filled := min(int(pos/p.dur*float64(barW)), barW)
+	var bar string
+	if filled > 0 {
+		fill := strings.Repeat(sty.glyphs.ProgressFill, filled)
+		// 热端：已播放部分的最后一格用副强调色（或主题头部符号），
+		// 形成色彩过渡；进度为 0 时无热端。
+		head := sty.glyphs.ProgressHead
+		if head == "" {
+			head = sty.glyphs.ProgressFill
+		}
+		if ansi.StringWidth(head) == 1 && filled >= 1 {
+			bar = sty.Accent.Render(strings.Repeat(sty.glyphs.ProgressFill, filled-1)) + sty.Accent2.Render(head)
+		} else {
+			bar = sty.Accent.Render(fill)
+		}
 	}
-	bar := sty.Status.Render(fillStr) + sty.Muted.Render(strings.Repeat(sty.glyphs.ProgressEmpty, barW-filled))
-	return sty.Muted.Render(left) + " " + bar + " " + sty.Muted.Render(right)
+	bar += sty.Faint.Render(strings.Repeat(sty.glyphs.ProgressEmpty, barW-filled))
+	return sty.Faint.Render(left) + " " + bar + " " + sty.Faint.Render(right)
 }
 
 func formatTime(sec float64) string {
@@ -291,9 +492,10 @@ func formatTime(sec float64) string {
 	return fmt.Sprintf("%02d:%02d", s/60, s%60)
 }
 
-// renderLyrics 渲染滚动歌词区：固定 n 行，当前句居中高亮，上下各占一半，
-// 开头结尾不足时留空；无歌词时整区留空。第一句尚未开始时按第一句
-// 居中排版但不高亮，避免整区位置跳变。歌词文本水平居中于窗口。
+// renderLyrics 渲染滚动歌词区：固定 n 行，当前句居中并以主强调色高亮，
+// 上下相邻句用正文色、更远句用微光色，形成明暗过渡；开头结尾不足时
+// 留空；无歌词时整区留空。第一句尚未开始时按第一句居中排版但不高亮，
+// 避免整区位置跳变。歌词文本水平居中于窗口。
 func renderLyrics(lines []string, cur, n, width int, sty styles) string {
 	center := n / 2
 	anchor := max(0, cur) // 排版锚点：-1 时视为第一句
@@ -312,21 +514,52 @@ func renderLyrics(lines []string, cur, n, width int, sty styles) string {
 		if pad := (width - ansi.StringWidth(text)) / 2; pad > 0 {
 			text = strings.Repeat(" ", pad) + text
 		}
-		if idx == cur {
-			out = append(out, sty.Status.Render(text))
-		} else {
-			out = append(out, sty.Muted.Render(text))
+		d := idx - anchor
+		if d < 0 {
+			d = -d
+		}
+		switch {
+		case idx == cur:
+			out = append(out, sty.Selected.Render(text))
+		case d <= 1:
+			out = append(out, sty.Item.Render(text))
+		default:
+			out = append(out, sty.Faint.Render(text))
 		}
 	}
 	return strings.Join(out, "\n")
 }
 
-// renderQueuePopup 渲染播放队列弹窗并居中放置在整个屏幕上。
+// renderHint 渲染底部帮助行：按键名用副强调色、说明用微光色，
+// 宽度不足时从尾部舍弃条目，保证不换行。
+func renderHint(bindings []key.Binding, width int, sty styles) string {
+	var parts []string
+	used := 0
+	for _, b := range bindings {
+		h := b.Help()
+		if h.Key == "" || h.Desc == "" {
+			continue
+		}
+		w := ansi.StringWidth(h.Key) + 1 + ansi.StringWidth(h.Desc)
+		if used > 0 {
+			w += 2
+		}
+		if width > 0 && used+w > width {
+			break
+		}
+		parts = append(parts, sty.Accent2.Render(h.Key)+" "+sty.Faint.Render(h.Desc))
+		used += w
+	}
+	return strings.Join(parts, "  ")
+}
+
+// renderQueuePopup 渲染播放队列弹窗，带字符阴影居中放置在整个屏幕上。
 func renderQueuePopup(p popupView, sty styles, width, height int) string {
 	var b strings.Builder
-	b.WriteString(sty.Title.Render("播放队列") + "\n")
+	b.WriteString(sty.Accent2.Bold(true).Render("播放队列") + "\n")
+	b.WriteString(sty.Faint.Render(strings.Repeat(sty.glyphs.Rule, queuePopupWidth-4)) + "\n")
 	if len(p.rows) == 0 {
-		b.WriteString(sty.Muted.Render("（空）") + "\n")
+		b.WriteString(sty.Faint.Render("（空）") + "\n")
 	}
 	end := min(p.offset+p.height, len(p.rows))
 	for i := p.offset; i < end; i++ {
@@ -336,43 +569,67 @@ func renderQueuePopup(p popupView, sty styles, width, height int) string {
 			if i > p.offset {
 				b.WriteString("\n")
 			}
-			b.WriteString(sty.Muted.Render(sty.popupRule+" "+row.title+" "+sty.popupRule) + "\n")
+			b.WriteString(sty.Faint.Render(sty.popupRule+" ") + sty.Muted.Render(row.title) + sty.Faint.Render(" "+sty.popupRule) + "\n")
 			continue
 		}
-		text := ansi.Truncate(row.text, queuePopupWidth-2, "")
+		text := ansi.Truncate(row.text, queuePopupWidth-4, "")
 		marker := sty.cursorBlank
 		style := sty.Item
-		if row.current {
+		switch {
+		case row.current:
 			marker = sty.glyphs.Playing
-		}
-		if row.dim {
-			style = sty.Muted
+			style = sty.Selected
+		case row.dim:
+			style = sty.Faint
 		}
 		if i == p.cursor {
+			if !row.current {
+				marker = sty.glyphs.Cursor
+			}
 			style = sty.Selected
 		}
 		b.WriteString(style.Render(marker+text) + "\n")
 	}
-	b.WriteString(sty.Muted.Render("↑/↓ 移动 · del 删除 · l/b/esc 关闭"))
+	b.WriteString(sty.Accent2.Render("j/k") + sty.Faint.Render(" 移动  ") + sty.Accent2.Render("del") + sty.Faint.Render(" 删除  ") + sty.Accent2.Render("esc") + sty.Faint.Render(" 关闭"))
 	return placeCentered(b.String(), sty, width, height)
 }
 
-// renderThemePicker 渲染主题选择弹窗并居中放置在整个屏幕上。
+// renderThemePicker 渲染主题选择弹窗，带字符阴影居中放置在整个屏幕上。
 func renderThemePicker(l listView, sty styles, width, height int) string {
-	body := renderList(l, sty)
 	content := lipgloss.JoinVertical(lipgloss.Left,
-		sty.Title.Render("选择主题"), "",
-		body, "",
-		sty.Muted.Render("enter 应用 · t/b/esc 关闭"),
+		sty.Accent2.Bold(true).Render("选择主题"),
+		sty.Faint.Render(strings.Repeat(sty.glyphs.Rule, themePickerWidth-4)),
+		renderList(l, sty, themePickerWidth-4),
+		"",
+		sty.Accent2.Render("enter")+sty.Faint.Render(" 应用  ")+sty.Accent2.Render("esc")+sty.Faint.Render(" 关闭"),
 	)
 	return placeCentered(content, sty, width, height)
 }
 
-// placeCentered 将内容装入主题边框并居中放置在屏幕上。
+// placeCentered 将内容装入主题边框，附字符阴影后居中放置在屏幕上。
 func placeCentered(content string, sty styles, width, height int) string {
-	box := lipgloss.NewStyle().Padding(0, 1)
+	box := lipgloss.NewStyle().Padding(0, 2)
 	if !sty.noBorder {
 		box = box.Border(sty.border).BorderForeground(sty.borderColor)
 	}
-	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, box.Render(content))
+	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, addShadow(box.Render(content), sty, width, height))
+}
+
+// addShadow 在内容块的右侧与底部各加一格微光字符阴影（░），
+// 在纯黑背景上形成浮起的空间感；空间不足时放弃阴影。
+func addShadow(s string, sty styles, width, height int) string {
+	lines := strings.Split(s, "\n")
+	w := 0
+	for _, l := range lines {
+		w = max(w, ansi.StringWidth(l))
+	}
+	if w == 0 || w+2 > width || len(lines)+1 > height {
+		return s
+	}
+	shadow := sty.Faint.Render("░")
+	for i, l := range lines {
+		lines[i] = l + strings.Repeat(" ", w-ansi.StringWidth(l)) + shadow
+	}
+	bottom := strings.Repeat(" ", 2) + sty.Faint.Render(strings.Repeat("░", max(0, w-1)))
+	return strings.Join(append(lines, bottom), "\n")
 }

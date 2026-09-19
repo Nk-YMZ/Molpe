@@ -64,3 +64,29 @@ func TestDefaultDirsFallback(t *testing.T) {
 		}
 	}
 }
+
+func TestEffectiveLyricGapDefaults(t *testing.T) {
+	c := DefaultConfig()
+	if got := c.EffectiveLyricGapAbove(); got != 1 {
+		t.Errorf("EffectiveLyricGapAbove() = %d，预期 1", got)
+	}
+	if got := c.EffectiveLyricGapBelow(); got != 1 {
+		t.Errorf("EffectiveLyricGapBelow() = %d，预期 1", got)
+	}
+	zero, three := 0, 3
+	c.LyricGapAbove, c.LyricGapBelow = &zero, &three
+	if got := c.EffectiveLyricGapAbove(); got != 0 {
+		t.Errorf("0 是合法的紧凑间距，得到 %d", got)
+	}
+	if got := c.EffectiveLyricGapBelow(); got != 3 {
+		t.Errorf("EffectiveLyricGapBelow() = %d，预期 3", got)
+	}
+	neg, big := -1, 9
+	c.LyricGapAbove, c.LyricGapBelow = &neg, &big
+	if got := c.EffectiveLyricGapAbove(); got != 1 {
+		t.Errorf("非法值应回退默认 1，得到 %d", got)
+	}
+	if got := c.EffectiveLyricGapBelow(); got != 1 {
+		t.Errorf("非法值应回退默认 1，得到 %d", got)
+	}
+}

@@ -43,6 +43,25 @@ func (m *Model) scheduleProgressTick() tea.Cmd {
 	return tea.Tick(progressInterval, func(time.Time) tea.Msg { return progressTickMsg{seq} })
 }
 
+// revealInterval 曲名逐字出现的字符间隔；整段动画约半秒内完成并彻底停止。
+const revealInterval = 24 * time.Millisecond
+
+// revealTickMsg 逐字出现定时器消息；seq 与 Model.revealSeq 不一致时
+// 说明是切歌后残留的过期定时器，直接丢弃。
+type revealTickMsg struct{ seq int }
+
+// scheduleRevealTick 安排下一个字符的出现；文本完整出现后自动停止，
+// 不常驻后台。
+func (m *Model) scheduleRevealTick() tea.Cmd {
+	if m.revealTicking || len(m.revealTarget) == 0 || m.revealN >= len(m.revealTarget) {
+		return nil
+	}
+	m.revealTicking = true
+	m.revealSeq++
+	seq := m.revealSeq
+	return tea.Tick(revealInterval, func(time.Time) tea.Msg { return revealTickMsg{seq} })
+}
+
 // playCmd 拉取歌曲播放地址。每次发起都会递增请求序号，
 // 快速连续切歌时先发出的慢响应会被 handleSongURL 按序号丢弃。
 func (m *Model) playCmd(song netease.Song) tea.Cmd {

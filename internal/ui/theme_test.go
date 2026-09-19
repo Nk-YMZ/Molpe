@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"image/color"
 	"os"
 	"path/filepath"
 	"testing"
@@ -93,5 +94,21 @@ func TestEnsureThemesAndList(t *testing.T) {
 	}
 	if len(names) != 2 || names[0] != "b" || names[1] != "default" {
 		t.Errorf("主题列表不符: %v", names)
+	}
+}
+
+func TestBackgroundColor(t *testing.T) {
+	// 缺省与非法值均回退纯黑。
+	if got := (Theme{}).BackgroundColor(); got != color.Black {
+		t.Errorf("缺省背景应为纯黑: %v", got)
+	}
+	th := Theme{Colors: Colors{Background: "oops"}}
+	if got := th.BackgroundColor(); got != color.Black {
+		t.Errorf("非法背景应回退纯黑: %v", got)
+	}
+	th.Colors.Background = "#102030"
+	r, g, b, _ := th.BackgroundColor().RGBA()
+	if r>>8 != 0x10 || g>>8 != 0x20 || b>>8 != 0x30 {
+		t.Errorf("背景色解析不符: %v", th.BackgroundColor())
 	}
 }

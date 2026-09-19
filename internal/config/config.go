@@ -29,6 +29,10 @@ type Config struct {
 	LyricTranslation *bool `json:"lyric_translation,omitempty"`
 	// LyricLines 歌词显示总行数；<1 或 >15 时使用默认值 5。
 	LyricLines int `json:"lyric_lines,omitempty"`
+	// LyricGapAbove 歌词区与上方正文区之间的空行数；null、<0 或 >5 时使用默认值 1。
+	LyricGapAbove *int `json:"lyric_gap_above,omitempty"`
+	// LyricGapBelow 歌词区与下方进度条之间的空行数；null、<0 或 >5 时使用默认值 1。
+	LyricGapBelow *int `json:"lyric_gap_below,omitempty"`
 	// Theme 主题名（对应 themes/<name>.json）；空使用默认主题。
 	Theme string `json:"theme,omitempty"`
 }
@@ -38,11 +42,18 @@ const (
 	defaultVolumeStep = 5
 	defaultLyricLines = 5
 	maxLyricLines     = 15
+	defaultLyricGap   = 1
+	maxLyricGap       = 5
 )
 
 // DefaultConfig 返回默认配置。
 func DefaultConfig() Config {
-	return Config{Quality: "lossless"}
+	above, below := defaultLyricGap, defaultLyricGap
+	return Config{
+		Quality:       "lossless",
+		LyricGapAbove: &above,
+		LyricGapBelow: &below,
+	}
 }
 
 // EffectiveVolume 返回生效的音量百分比（0-100）。
@@ -75,6 +86,24 @@ func (c Config) EffectiveLyricLines() int {
 		return defaultLyricLines
 	}
 	return c.LyricLines
+}
+
+// EffectiveLyricGapAbove 返回歌词区与上方正文区之间的生效空行数。
+func (c Config) EffectiveLyricGapAbove() int {
+	return effectiveGap(c.LyricGapAbove)
+}
+
+// EffectiveLyricGapBelow 返回歌词区与下方进度条之间的生效空行数。
+func (c Config) EffectiveLyricGapBelow() int {
+	return effectiveGap(c.LyricGapBelow)
+}
+
+// effectiveGap 校验歌词区间距：null 或越界回退默认值，0 是合法的紧凑间距。
+func effectiveGap(v *int) int {
+	if v == nil || *v < 0 || *v > maxLyricGap {
+		return defaultLyricGap
+	}
+	return *v
 }
 
 // LoadConfig 从 dir 下的 config.json 读取配置；文件不存在时写入并返回默认配置。

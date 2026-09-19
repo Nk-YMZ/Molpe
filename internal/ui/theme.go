@@ -6,9 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
-	"charm.land/bubbles/v2/help"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
@@ -22,16 +22,26 @@ const themesDir = "themes"
 const defaultThemeName = "default"
 
 // Colors 主题配色；值为 ANSI 色号（如 "15"）或十六进制颜色（如 "#ffffff"）。
-// 背景色不属于主题：所有主题统一纯黑背景（#000000）。
+//
+// 界面层次按明暗分级：Faint（装饰线、空进度、远端歌词等最弱层）<
+// Muted（次要文本）< Foreground（正文）；Accent 与 Accent2 是两个强调色，
+// 前者承载选中/播放/进度等主高亮，后者小剂量点缀（品牌标记、进度热端、
+// 弹窗标题、按键名），为界面提供温度。
+// Background 为整屏背景色（仅支持 "#rrggbb"），缺省或非法时为纯黑；
+// 随附主题统一使用纯黑（#000000）。
 type Colors struct {
+	Background string `json:"background,omitempty"`
 	Foreground string `json:"foreground"`
 	Muted      string `json:"muted"`
+	Faint      string `json:"faint"`
 	Accent     string `json:"accent"`
+	Accent2    string `json:"accent2"`
 	Error      string `json:"error"`
 }
 
 // fillDefaults 将空字符串配色回退为默认值；配色为空会破坏显示，
 // 而符号允许用户显式置空，故 Glyphs 不做同样处理。
+// Background 例外：允许留空，由 BackgroundColor 回退纯黑。
 func (c *Colors) fillDefaults() {
 	d := DefaultTheme().Colors
 	if c.Foreground == "" {
@@ -40,8 +50,14 @@ func (c *Colors) fillDefaults() {
 	if c.Muted == "" {
 		c.Muted = d.Muted
 	}
+	if c.Faint == "" {
+		c.Faint = d.Faint
+	}
 	if c.Accent == "" {
 		c.Accent = d.Accent
+	}
+	if c.Accent2 == "" {
+		c.Accent2 = d.Accent2
 	}
 	if c.Error == "" {
 		c.Error = d.Error
@@ -58,8 +74,10 @@ type Glyphs struct {
 	PlaylistStarred string `json:"playlist_starred"`  // 收藏的歌单标记
 	PopupHeaderRule string `json:"popup_header_rule"` // 弹窗分区标题两侧的装饰线
 	ProgressFill    string `json:"progress_fill"`     // 进度条已播放部分
-	ProgressHead    string `json:"progress_head"`     // 进度条头部（可为空）
+	ProgressHead    string `json:"progress_head"`     // 进度条头部（可为空，空时用填充符加副强调色）
 	ProgressEmpty   string `json:"progress_empty"`    // 进度条未播放部分
+	Rule            string `json:"rule"`              // 整宽分隔线（头部下方）
+	HeaderMark      string `json:"header_mark"`       // 头部品牌标记
 }
 
 // 边框样式的合法取值。
@@ -78,32 +96,47 @@ type Theme struct {
 	Border string `json:"border,omitempty"`
 }
 
-// DefaultTheme 返回默认主题（所有主题共享纯黑背景）。
+// DefaultTheme 返回默认主题。
+// 默认配色选用终端基础色（16 色内），Faint 使用 256 色深灰，
+// 在未支持 256 色的终端上会由终端自行降级，不破坏可读性。
 func DefaultTheme() Theme {
 	return Theme{
 		Colors: Colors{
+			Background: "#000000",
 			Foreground: "15",
 			Muted:      "8",
+			Faint:      "238",
 			Accent:     "10",
+			Accent2:    "11",
 			Error:      "9",
 		},
 		Glyphs: Glyphs{
-			Cursor:          "▸ ",
+			Cursor:          "▌ ",
 			Playing:         "▶ ",
 			Paused:          "⏸ ",
 			PlaylistCreated: "✎",
 			PlaylistStarred: "♥",
 			PopupHeaderRule: "─",
-			ProgressFill:    "━",
-			ProgressHead:    "●",
-			ProgressEmpty:   "─",
+			ProgressFill:    "█",
+			ProgressHead:    "",
+			ProgressEmpty:   "░",
+			Rule:            "─",
+			HeaderMark:      "▞",
 		},
 		Border: borderRounded,
 	}
 }
 
-// BackgroundColor 返回终端背景色：固定纯黑，不随主题变化。
-func (t Theme) BackgroundColor() color.Color { return color.Black }
+// BackgroundColor 返回主题的背景色；仅解析 "#rrggbb"，缺省或非法时为纯黑。
+func (t Theme) BackgroundColor() color.Color {
+	s := t.Colors.Background
+	if len(s) == 7 && s[0] == '#' {
+		if v, err := strconv.ParseUint(s[1:], 16, 32); err == nil {
+			return color.RGBA{R: uint8(v >> 16), G: uint8(v >> 8), B: uint8(v), A: 0xff}
+		}
+	}
+	return color.Black
+}
 
 // EnsureThemes 确保主题目录存在且默认主题文件已写入（便于用户复制修改）。
 func EnsureThemes(dir string) error {
@@ -165,12 +198,14 @@ func ListThemes(dir string) ([]string, error) {
 // styles 由 Theme 派生的组件样式集合，含预构建的符号串，
 // 渲染时直接取用，不做重复计算。
 type styles struct {
-	Title    lipgloss.Style
-	Item     lipgloss.Style
-	Selected lipgloss.Style
-	Muted    lipgloss.Style
+	Title    lipgloss.Style // 正文粗体（标题、当前曲目名）
+	Item     lipgloss.Style // 正文
+	Selected lipgloss.Style // 选中项/当前歌词（主强调色粗体）
+	Muted    lipgloss.Style // 次要文本
+	Faint    lipgloss.Style // 最弱层（装饰线、远端歌词、空进度）
+	Accent   lipgloss.Style // 主强调色（播放符号、进度填充）
+	Accent2  lipgloss.Style // 副强调色（品牌标记、进度热端、弹窗标题、按键名）
 	Error    lipgloss.Style
-	Status   lipgloss.Style
 
 	borderColor color.Color     // 弹窗边框颜色
 	border      lipgloss.Border // 弹窗边框样式
@@ -187,10 +222,12 @@ func newStyles(t Theme) styles {
 		Item:     base,
 		Selected: base.Foreground(lipgloss.Color(t.Colors.Accent)).Bold(true),
 		Muted:    base.Foreground(lipgloss.Color(t.Colors.Muted)),
+		Faint:    base.Foreground(lipgloss.Color(t.Colors.Faint)),
+		Accent:   base.Foreground(lipgloss.Color(t.Colors.Accent)),
+		Accent2:  base.Foreground(lipgloss.Color(t.Colors.Accent2)),
 		Error:    base.Foreground(lipgloss.Color(t.Colors.Error)),
-		Status:   base.Foreground(lipgloss.Color(t.Colors.Accent)),
 
-		borderColor: lipgloss.Color(t.Colors.Muted),
+		borderColor: lipgloss.Color(t.Colors.Faint),
 		border:      popupBorder(t.Border),
 		noBorder:    t.Border == borderNone,
 		glyphs:      t.Glyphs,
@@ -205,15 +242,4 @@ func popupBorder(name string) lipgloss.Border {
 		return lipgloss.NormalBorder()
 	}
 	return lipgloss.RoundedBorder()
-}
-
-// helpStyles 由 Theme 派生的帮助栏样式。
-func helpStyles(t Theme) help.Styles {
-	s := help.DefaultStyles(true)
-	key := lipgloss.NewStyle().Foreground(lipgloss.Color(t.Colors.Accent))
-	desc := lipgloss.NewStyle().Foreground(lipgloss.Color(t.Colors.Muted))
-	s.ShortKey, s.FullKey = key, key
-	s.ShortDesc, s.FullDesc = desc, desc
-	s.ShortSeparator, s.FullSeparator, s.Ellipsis = desc, desc, desc
-	return s
 }

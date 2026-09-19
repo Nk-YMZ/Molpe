@@ -3,11 +3,11 @@ package ui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 
@@ -148,17 +148,23 @@ type Model struct {
 	note     string // 状态栏普通提示（如队列操作反馈），到期自动清除
 	noteID   int    // 提示序号，防止过期定时器误清更新的提示
 
-	lyrics       []netease.LyricLine // 当前曲目歌词（按时间排序）
-	lyricCur     int                 // 当前歌词行下标，-1 表示尚未到第一句
-	lyricLines   int                 // 歌词显示总行数（配置 lyric_lines）
-	lyricTicking bool                // 歌词滚动定时器是否在运行
-	lyricSeq     int                 // 定时器序号，用于丢弃暂停/切歌后残留的过期定时器
+	lyrics        []netease.LyricLine // 当前曲目歌词（按时间排序）
+	lyricCur      int                 // 当前歌词行下标，-1 表示尚未到第一句
+	lyricLines    int                 // 歌词显示总行数（配置 lyric_lines）
+	lyricGapAbove int                 // 歌词区与正文区之间的空行数（配置 lyric_gap_above）
+	lyricGapBelow int                 // 歌词区与进度条之间的空行数（配置 lyric_gap_below）
+	lyricTicking  bool                // 歌词滚动定时器是否在运行
+	lyricSeq      int                 // 定时器序号，用于丢弃暂停/切歌后残留的过期定时器
 
 	progressPos     float64 // 当前播放位置（秒）
 	progressTicking bool    // 进度条定时器是否在运行
 	progressSeq     int     // 定时器序号，用于丢弃暂停/切歌后残留的过期定时器
 
-	help   help.Model
+	revealTarget  []rune // 逐字出现的目标文本（切歌后的“歌名 - 艺术家”）
+	revealN       int    // 已出现的字符数
+	revealSeq     int    // 定时器序号，用于丢弃切歌后残留的过期定时器
+	revealTicking bool   // 逐字出现定时器是否在运行
+
 	width  int
 	height int
 
@@ -172,25 +178,24 @@ func New(client *netease.Client, cfg config.Config, dirs config.Dirs, theme Them
 	if themeName == "" {
 		themeName = defaultThemeName
 	}
-	h := help.New()
-	h.Styles = helpStyles(theme)
 	m := Model{
-		client:      client,
-		cfg:         cfg,
-		dirs:        dirs,
-		cfgWritable: cfgErr == nil,
-		quality:     netease.NormalizeQuality(cfg.Quality),
-		volume:      cfg.EffectiveVolume(),
-		lyricLines:  cfg.EffectiveLyricLines(),
-		theme:       theme,
-		themeName:   themeName,
-		sty:         newStyles(theme),
-		keys:        defaultKeyMap(),
-		login:       newLoginModel(client),
-		player:      &playerHolder{},
-		queue:       queue.New(nil, queue.ModeLoop, queue.Options{}),
-		endCh:       make(chan struct{}, 1),
-		help:        h,
+		client:        client,
+		cfg:           cfg,
+		dirs:          dirs,
+		cfgWritable:   cfgErr == nil,
+		quality:       netease.NormalizeQuality(cfg.Quality),
+		volume:        cfg.EffectiveVolume(),
+		lyricLines:    cfg.EffectiveLyricLines(),
+		lyricGapAbove: cfg.EffectiveLyricGapAbove(),
+		lyricGapBelow: cfg.EffectiveLyricGapBelow(),
+		theme:         theme,
+		themeName:     themeName,
+		sty:           newStyles(theme),
+		keys:          defaultKeyMap(),
+		login:         newLoginModel(client),
+		player:        &playerHolder{},
+		queue:         queue.New(nil, queue.ModeLoop, queue.Options{}),
+		endCh:         make(chan struct{}, 1),
 
 		cleanupOnce: &sync.Once{},
 	}
@@ -238,7 +243,7 @@ func (m *Model) saveQueue() {
 	}
 }
 
-// ShortHelp 与 FullHelp 实现 help.KeyMap，按当前页面展示按键。
+// ShortHelp 返回当前页面的按键提示（供底部帮助行渲染）。
 func (m Model) ShortHelp() []key.Binding {
 	switch m.page {
 	case pageLogin:
@@ -255,8 +260,6 @@ func (m Model) ShortHelp() []key.Binding {
 		return []key.Binding{m.keys.Quit}
 	}
 }
-
-func (m Model) FullHelp() [][]key.Binding { return [][]key.Binding{m.ShortHelp()} }
 
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(checkLoginCmd(m.client, true), listenMprisCmd(m.mpris), listenEndCmd(m.endCh))
@@ -306,7 +309,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.playlists.err = msg.err
 		if msg.err == nil {
 			m.playlists.data = msg.playlists
-			m.playlists.list.SetItems(playlistItems(msg.playlists, m.theme.Glyphs))
+			m.playlists.list.SetItems(playlistNames(msg.playlists))
 		}
 		return m, nil
 	case songsFetchedMsg:
@@ -318,7 +321,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.songs.err = msg.err
 		if msg.err == nil {
 			m.songs.data = msg.songs
-			m.songs.list.SetItems(songItems(msg.songs))
+			m.songs.list.SetItems(songNames(msg.songs))
 		}
 		return m, nil
 	case songURLFetchedMsg:
@@ -353,6 +356,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.note = ""
 		}
 		return m, nil
+	case revealTickMsg:
+		if msg.seq != m.revealSeq {
+			return m, nil // 过期定时器（切歌后残留）
+		}
+		m.revealTicking = false
+		m.revealN++
+		return m, m.scheduleRevealTick()
 	case playerEndedMsg:
 		// 自然播完：按队列规则连播；无可播歌曲（顺序模式到末尾）时停止。
 		song, ok := m.queue.Next()
@@ -659,11 +669,16 @@ func (m Model) handleSongURL(msg songURLFetchedMsg) (tea.Model, tea.Cmd) {
 	m.progressPos = 0
 	m.progressTicking = false
 	m.progressSeq++
+	// 曲名逐字出现：重置目标文本并丢弃旧定时器。
+	m.revealTarget = []rune(msg.song.Name + " - " + msg.song.Artists)
+	m.revealN = 0
+	m.revealTicking = false
+	m.revealSeq++
 	m.publishState()
 	m.refreshQueuePopup()
 	// 先调度再返回：scheduleProgressTick 是指针方法，会修改 progressTicking，
 	// 若直接写在 return 表达式里，m 会先被拷贝导致标记丢失。
-	cmd := tea.Batch(m.fetchLyricsCmd(msg.song.ID), m.scheduleProgressTick())
+	cmd := tea.Batch(m.fetchLyricsCmd(msg.song.ID), m.scheduleProgressTick(), m.scheduleRevealTick())
 	return m, cmd
 }
 
@@ -681,8 +696,11 @@ func (m *Model) setPaused(paused bool) tea.Cmd {
 	m.paused = paused
 	m.publishState()
 	if paused {
-		// 暂停：进度条与歌词定时器自然失效（序号递增丢弃残留定时器）。
+		// 暂停：作废残留定时器并清除运行标记（序号递增使残留定时器
+		// 到期时被丢弃；标记必须一并清除，否则恢复播放时
+		// scheduleProgressTick 会因标记残留而不再调度，进度条卡死）。
 		m.progressSeq++
+		m.progressTicking = false
 		return nil
 	}
 	return tea.Batch(m.scheduleLyricTick(), m.scheduleProgressTick())
@@ -760,9 +778,10 @@ func (m *Model) shutdown() {
 func (m Model) Cleanup() { m.shutdown() }
 
 // listHeight 计算列表可见行数；extra 为页面内额外占用的行数。
-// 歌词区固定占用 lyricLines 行，进度条固定 1 行，同样从可用高度中扣除。
+// 歌词区固定占用 lyricLines 行及其上下间距，加上 chromeFixed 行界面框架，
+// 一并从可用高度中扣除。
 func (m Model) listHeight(extra int) int {
-	h := m.height - 6 - m.lyricLines - extra
+	h := m.height - chromeFixed - m.lyricLines - m.lyricGapAbove - m.lyricGapBelow - extra
 	if h < 1 {
 		return 1
 	}
@@ -779,7 +798,7 @@ func (m Model) fetchPlaylists() tea.Cmd {
 }
 
 func (m Model) View() tea.View {
-	v := tea.NewView(renderRoot(m.buildViewState(), m.sty, m.help))
+	v := tea.NewView(renderRoot(m.buildViewState(), m.sty))
 	v.AltScreen = true
 	v.BackgroundColor = m.theme.BackgroundColor()
 	v.WindowTitle = "木末 Molpe"
@@ -795,6 +814,8 @@ func (m Model) buildViewState() viewState {
 		headerRight:  m.headerRight(),
 		lyricCur:     m.lyricCur,
 		lyricLines:   m.lyricLines,
+		gapAbove:     m.lyricGapAbove,
+		gapBelow:     m.lyricGapBelow,
 		helpBindings: m.ShortHelp(),
 	}
 	s.progress = progressView{pos: m.progressPos, ok: m.playing != nil}
@@ -816,6 +837,7 @@ func (m Model) buildViewState() viewState {
 			art:    m.login.art,
 			status: m.login.status,
 			notice: m.login.notice,
+			frame:  m.login.frame,
 		}}
 	case pagePlaylists:
 		s.body = m.playlistsBody()
@@ -830,7 +852,11 @@ func (m Model) buildViewState() viewState {
 	}
 	if m.picker.open {
 		l := m.picker.list
-		s.picker = &listView{items: l.items, cursor: l.cursor, offset: l.offset, height: l.height}
+		items := make([]listItemView, len(l.items))
+		for i, name := range l.items {
+			items[i] = listItemView{primary: name}
+		}
+		s.picker = &listView{items: items, cursor: l.cursor, offset: l.offset, height: l.height}
 	}
 	return s
 }
@@ -843,12 +869,18 @@ func (m Model) playlistsBody() bodyView {
 		return bodyView{kind: bodyNotice, notice: m.playlists.err.Error() + "，按 r 重试", isErr: true}
 	default:
 		l := m.playlists.list
-		return bodyView{kind: bodyList, list: listView{items: l.items, cursor: l.cursor, offset: l.offset, height: l.height}}
+		return bodyView{kind: bodyList, list: listView{
+			items:  playlistItems(m.playlists.data, m.theme.Glyphs),
+			cursor: l.cursor, offset: l.offset, height: l.height,
+		}}
 	}
 }
 
 func (m Model) songsBody() bodyView {
-	b := bodyView{title: fmt.Sprintf("歌单：%s", m.songs.playlist.Name)}
+	b := bodyView{
+		title:     m.songs.playlist.Name,
+		titleNote: fmt.Sprintf("%d 首", m.songs.playlist.TrackCount),
+	}
 	switch {
 	case m.songs.loading:
 		b.kind, b.notice = bodyNotice, "正在加载歌曲…"
@@ -856,7 +888,10 @@ func (m Model) songsBody() bodyView {
 		b.kind, b.notice, b.isErr = bodyNotice, m.songs.err.Error()+"，按 r 重试", true
 	default:
 		l := m.songs.list
-		b.kind, b.list = bodyList, listView{items: l.items, cursor: l.cursor, offset: l.offset, height: l.height}
+		b.kind, b.list = bodyList, listView{
+			items:  songItems(m.songs.data),
+			cursor: l.cursor, offset: l.offset, height: l.height,
+		}
 	}
 	return b
 }
@@ -883,6 +918,10 @@ func (m Model) statusState() statusView {
 	st.playing = true
 	st.paused = m.paused
 	st.track = m.playing.song.Name + " - " + m.playing.song.Artists
+	// 逐字出现中：只展示已出现的部分，末尾加光标块。
+	if len(m.revealTarget) > 0 && m.revealN < len(m.revealTarget) {
+		st.track = string(m.revealTarget[:m.revealN]) + "▌"
+	}
 	if pos, total, ok := m.queue.Position(); ok {
 		st.pos, st.total = pos, total
 	}
@@ -907,23 +946,54 @@ func (m Model) popupState() *popupView {
 	return pv
 }
 
-func playlistItems(playlists []netease.Playlist, g Glyphs) []string {
-	items := make([]string, len(playlists))
+// playlistNames 返回歌单名列表（仅作为列表模型的条目计数与调试占位；
+// 渲染用的结构化条目由 playlistItems 在快照时构建）。
+func playlistNames(playlists []netease.Playlist) []string {
+	names := make([]string, len(playlists))
+	for i, p := range playlists {
+		names[i] = p.Name
+	}
+	return names
+}
+
+// songNames 返回歌曲名列表（用途同 playlistNames）。
+func songNames(songs []netease.Song) []string {
+	names := make([]string, len(songs))
+	for i, s := range songs {
+		names[i] = s.Name
+	}
+	return names
+}
+
+// playlistItems 将歌单数据拍平为列式列表项：序号 / 标记 / 歌单名 / 曲目数（右列）。
+func playlistItems(playlists []netease.Playlist, g Glyphs) []listItemView {
+	items := make([]listItemView, len(playlists))
 	for i, p := range playlists {
 		mark := g.PlaylistStarred // 收藏
 		if p.Created {
 			mark = g.PlaylistCreated // 创建
 		}
-		items[i] = fmt.Sprintf("%s %s (%d)", mark, p.Name, p.TrackCount)
+		items[i] = listItemView{
+			index:   strconv.Itoa(i + 1),
+			marker:  mark,
+			primary: p.Name,
+			right:   fmt.Sprintf("%d 首", p.TrackCount),
+		}
 	}
 	return items
 }
 
-func songItems(songs []netease.Song) []string {
-	items := make([]string, len(songs))
+// songItems 将歌曲数据拍平为列式列表项：序号 / 歌名 / 艺术家 / 时长（右列）。
+func songItems(songs []netease.Song) []listItemView {
+	items := make([]listItemView, len(songs))
 	for i, s := range songs {
 		d := s.Duration
-		items[i] = fmt.Sprintf("%s - %s  %02d:%02d", s.Name, s.Artists, int(d.Minutes()), int(d.Seconds())%60)
+		items[i] = listItemView{
+			index:     strconv.Itoa(i + 1),
+			primary:   s.Name,
+			secondary: s.Artists,
+			right:     fmt.Sprintf("%02d:%02d", int(d.Minutes()), int(d.Seconds())%60),
+		}
 	}
 	return items
 }

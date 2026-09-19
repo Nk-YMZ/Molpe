@@ -8,6 +8,9 @@ import (
 // themePickerMaxRows 主题选择弹窗可见行数上限。
 const themePickerMaxRows = 12
 
+// themePickerWidth 主题选择弹窗内容宽度（字符数）。
+const themePickerWidth = 32
+
 // themePicker 主题选择弹窗。打开时重新扫描主题目录，
 // 因此修改主题文件后重新打开或再次选中即可生效。
 type themePicker struct {
@@ -69,8 +72,8 @@ func (m Model) updatePicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// applyTheme 加载并应用主题：重建样式、同步帮助栏配色，
-// 并以内嵌新符号重建歌单列表项；主题名随配置在退出时统一落盘。
+// applyTheme 加载并应用主题：重建样式并持久化主题名（随配置在退出时统一落盘）。
+// 列表项在快照时按主题符号重建，无需额外刷新。
 func (m *Model) applyTheme(name string) tea.Cmd {
 	t, err := LoadTheme(m.dirs.Config, name)
 	if err != nil {
@@ -79,10 +82,6 @@ func (m *Model) applyTheme(name string) tea.Cmd {
 	m.theme = t
 	m.themeName = name
 	m.sty = newStyles(t)
-	m.help.Styles = helpStyles(t)
 	m.cfg.Theme = name
-	if m.playlists.data != nil {
-		m.playlists.list.SetItems(playlistItems(m.playlists.data, t.Glyphs))
-	}
 	return m.setNote("已切换主题：" + name)
 }

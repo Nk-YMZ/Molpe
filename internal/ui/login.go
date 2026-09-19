@@ -12,6 +12,10 @@ import (
 // qrPollInterval 是二维码状态的轮询间隔。
 const qrPollInterval = 2 * time.Second
 
+// loginFrameInterval 是登录页状态行块状旋转帧的刷新间隔；
+// 仅在登录页且二维码有效期间运行，离开登录页后彻底停止。
+const loginFrameInterval = 150 * time.Millisecond
+
 type loginModel struct {
 	client  *netease.Client
 	qr      *netease.QRLogin
@@ -20,6 +24,7 @@ type loginModel struct {
 	notice  string // 附加提示，如启动时检查登录态失败
 	expired bool   // 二维码失效或获取失败，停止轮询
 	done    bool   // 登录成功
+	frame   int    // 状态行动画帧序号
 }
 
 type (
@@ -29,6 +34,7 @@ type (
 		err error
 	}
 	qrTickMsg    struct{}
+	loginTickMsg struct{} // 状态行帧动画
 	qrCheckedMsg struct {
 		code int
 		err  error
@@ -79,6 +85,11 @@ func (m loginModel) poll() tea.Cmd {
 	return tea.Tick(qrPollInterval, func(time.Time) tea.Msg { return qrTickMsg{} })
 }
 
+// frameTick 调度状态行帧动画的下一帧。
+func (m loginModel) frameTick() tea.Cmd {
+	return tea.Tick(loginFrameInterval, func(time.Time) tea.Msg { return loginTickMsg{} })
+}
+
 func (m loginModel) Update(msg tea.Msg) (loginModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case qrFetchedMsg:
@@ -91,7 +102,13 @@ func (m loginModel) Update(msg tea.Msg) (loginModel, tea.Cmd) {
 		m.qr = msg.qr
 		m.art = msg.art
 		m.status = "请使用网易云音乐 App 扫码登录"
-		return m, m.poll()
+		return m, tea.Batch(m.poll(), m.frameTick())
+	case loginTickMsg:
+		if m.qr == nil || m.expired || m.done {
+			return m, nil // 动画随登录页生命周期结束
+		}
+		m.frame++
+		return m, m.frameTick()
 	case qrTickMsg:
 		if m.qr == nil || m.expired {
 			return m, nil
