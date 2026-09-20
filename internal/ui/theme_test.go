@@ -120,6 +120,60 @@ func TestListThemesWithoutExtensionDirectory(t *testing.T) {
 	}
 }
 
+func TestParseThemeColor(t *testing.T) {
+	cases := []struct {
+		in      string
+		r, g, b int
+	}{
+		{"#102030", 0x10, 0x20, 0x30},
+		{"15", 0xff, 0xff, 0xff},  // ANSI 15 亮白
+		{"238", 0x44, 0x44, 0x44}, // 灰度阶梯：8+10*6
+		{"196", 0xff, 0x00, 0x00}, // 颜色立方体：level(5,0,0)
+		{"21", 0x00, 0x00, 0xff},  // 颜色立方体：16+5，level(0,0,5)
+	}
+	for _, c := range cases {
+		r, g, b, ok := parseThemeColor(c.in)
+		if !ok || r != c.r || g != c.g || b != c.b {
+			t.Errorf("parseThemeColor(%q) = (%d,%d,%d,%v)，预期 (%d,%d,%d,true)", c.in, r, g, b, ok, c.r, c.g, c.b)
+		}
+	}
+	for _, bad := range []string{"", "oops", "#12345", "#1234567", "256", "-1"} {
+		if _, _, _, ok := parseThemeColor(bad); ok {
+			t.Errorf("parseThemeColor(%q) 应失败", bad)
+		}
+	}
+}
+
+func TestBuildLyricRamp(t *testing.T) {
+	// 端点无法解析时回退 nil，由渲染层用前景/微光两档。
+	if got := buildLyricRamp("oops", "#000000"); got != nil {
+		t.Errorf("非法端点应返回 nil: %v", got)
+	}
+	ramp := buildLyricRamp("#ffffff", "#000000")
+	if len(ramp) != lyricRampSteps {
+		t.Fatalf("渐变档数 = %d，预期 %d", len(ramp), lyricRampSteps)
+	}
+	// 首末档精确落在两个主题色上（渐变档为 hex 色，底层类型是 color.RGBA）。
+	if got, ok := ramp[0].GetForeground().(color.RGBA); !ok || got != (color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}) {
+		t.Errorf("首档应为前景色: %v", ramp[0].GetForeground())
+	}
+	if got, ok := ramp[len(ramp)-1].GetForeground().(color.RGBA); !ok || got != (color.RGBA{A: 0xff}) {
+		t.Errorf("末档应为微光色: %v", ramp[len(ramp)-1].GetForeground())
+	}
+	// 中间档严格单调变暗。
+	prev := 0xff
+	for i := 1; i < len(ramp)-1; i++ {
+		c, ok := ramp[i].GetForeground().(color.RGBA)
+		if !ok {
+			t.Fatalf("第 %d 档颜色类型不符: %T", i, ramp[i].GetForeground())
+		}
+		if int(c.R) >= prev {
+			t.Errorf("第 %d 档应严格单调变暗: %v", i, c)
+		}
+		prev = int(c.R)
+	}
+}
+
 func TestBackgroundColor(t *testing.T) {
 	// 缺省与非法值均回退纯黑。
 	if got := (Theme{}).BackgroundColor(); got != color.Black {

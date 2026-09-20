@@ -497,12 +497,13 @@ func formatTime(sec float64) string {
 }
 
 // renderLyrics 渲染滚动歌词区：固定 n 行，当前句居中并以主强调色高亮，
-// 上下相邻句用正文色、更远句用微光色，形成明暗过渡；开头结尾不足时
-// 留空；无歌词时整区留空。第一句尚未开始时按第一句居中排版但不高亮，
-// 避免整区位置跳变。歌词文本水平居中于窗口。
+// 其余句按与当前句的距离从前景色平滑渐变到微光色（逐行取档，档位随
+// 歌词行数自适应）；开头结尾不足时留空；无歌词时整区留空。第一句尚未
+// 开始时按第一句居中排版但不高亮，避免整区位置跳变。歌词文本水平居中于窗口。
 func renderLyrics(lines []string, cur, n, width int, sty styles) string {
 	center := n / 2
 	anchor := max(0, cur) // 排版锚点：-1 时视为第一句
+	maxD := max(center, n-1-center)
 	out := make([]string, 0, n)
 	for i := 0; i < n; i++ {
 		idx := i - center + anchor
@@ -518,20 +519,30 @@ func renderLyrics(lines []string, cur, n, width int, sty styles) string {
 		if pad := (width - ansi.StringWidth(text)) / 2; pad > 0 {
 			text = strings.Repeat(" ", pad) + text
 		}
+		if idx == cur {
+			out = append(out, sty.Selected.Render(text))
+			continue
+		}
 		d := idx - anchor
 		if d < 0 {
 			d = -d
 		}
-		switch {
-		case idx == cur:
-			out = append(out, sty.Selected.Render(text))
-		case d <= 1:
-			out = append(out, sty.Item.Render(text))
-		default:
-			out = append(out, sty.Faint.Render(text))
-		}
+		out = append(out, lyricStyle(sty, d, maxD).Render(text))
 	}
 	return strings.Join(out, "\n")
+}
+
+// lyricStyle 按与当前句的距离 d（>=0）返回渐变样式：相邻句接近前景色，
+// 最远端（d == maxD）落在微光色上；渐变不可用（主题色无法解析）时
+// 回退为前景/微光两档。
+func lyricStyle(sty styles, d, maxD int) lipgloss.Style {
+	if d <= 0 || maxD <= 1 || len(sty.lyricRamp) == 0 {
+		if d <= 1 {
+			return sty.Item
+		}
+		return sty.Faint
+	}
+	return sty.lyricRamp[(d-1)*(len(sty.lyricRamp)-1)/(maxD-1)]
 }
 
 // renderHint 渲染底部帮助行：按键名用副强调色、说明用微光色，

@@ -262,6 +262,11 @@ type styles struct {
 	glyphs      Glyphs
 	cursorBlank string // 与光标符号等宽的空白，用于未选中行对齐
 	popupRule   string // 弹窗分区标题两侧的装饰线（双写）
+
+	// lyricRamp 歌词渐变样式表：由主题的前景色平滑过渡到微光色，
+	// 按与当前句的距离取档，距离越远越虚；主题色无法解析时为 nil，
+	// 渲染层回退为前景/微光两档。
+	lyricRamp []lipgloss.Style
 }
 
 func newStyles(t Theme) styles {
@@ -282,6 +287,78 @@ func newStyles(t Theme) styles {
 		glyphs:      t.Glyphs,
 		cursorBlank: strings.Repeat(" ", ansi.StringWidth(t.Glyphs.Cursor)),
 		popupRule:   t.Glyphs.PopupHeaderRule + t.Glyphs.PopupHeaderRule,
+
+		lyricRamp: buildLyricRamp(t.Colors.Foreground, t.Colors.Faint),
+	}
+}
+
+// lyricRampSteps 歌词渐变的预计算档数；渲染按距离取档，不逐帧计算颜色。
+const lyricRampSteps = 16
+
+// buildLyricRamp 预计算从前景色到微光色的渐变样式表（首档为前景色，
+// 末档为微光色）；任一端点无法解析时返回 nil，由渲染层回退处理。
+func buildLyricRamp(foreground, faint string) []lipgloss.Style {
+	fr, fg, fb, ok1 := parseThemeColor(foreground)
+	tr, tg, tb, ok2 := parseThemeColor(faint)
+	if !ok1 || !ok2 {
+		return nil
+	}
+	ramp := make([]lipgloss.Style, lyricRampSteps)
+	last := lyricRampSteps - 1
+	for i := range ramp {
+		// 整数插值：首末档精确落在两个主题色上。
+		r := fr + (tr-fr)*i/last
+		g := fg + (tg-fg)*i/last
+		b := fb + (tb-fb)*i/last
+		ramp[i] = lipgloss.NewStyle().Foreground(lipgloss.Color(fmt.Sprintf("#%02x%02x%02x", r, g, b)))
+	}
+	return ramp
+}
+
+// parseThemeColor 将主题配色解析为 8 位 RGB：支持 "#rrggbb" 与
+// ANSI 色号（0-255，按 xterm 标准调色板换算，与终端渲染结果一致）。
+func parseThemeColor(s string) (r, g, b int, ok bool) {
+	if len(s) == 7 && s[0] == '#' {
+		v, err := strconv.ParseUint(s[1:], 16, 32)
+		if err != nil {
+			return 0, 0, 0, false
+		}
+		return int(v >> 16 & 0xff), int(v >> 8 & 0xff), int(v & 0xff), true
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 0 || n > 255 {
+		return 0, 0, 0, false
+	}
+	return ansiPaletteRGB(n)
+}
+
+// ansiPaletteRGB 返回 xterm 256 色调色板中色号 n 的 RGB 值。
+func ansiPaletteRGB(n int) (r, g, b int, ok bool) {
+	// 0-15：标准/高亮基础色。
+	basic := [16][3]int{
+		{0x00, 0x00, 0x00}, {0x80, 0x00, 0x00}, {0x00, 0x80, 0x00}, {0x80, 0x80, 0x00},
+		{0x00, 0x00, 0x80}, {0x80, 0x00, 0x80}, {0x00, 0x80, 0x80}, {0xc0, 0xc0, 0xc0},
+		{0x80, 0x80, 0x80}, {0xff, 0x00, 0x00}, {0x00, 0xff, 0x00}, {0xff, 0xff, 0x00},
+		{0x00, 0x00, 0xff}, {0xff, 0x00, 0xff}, {0x00, 0xff, 0xff}, {0xff, 0xff, 0xff},
+	}
+	switch {
+	case n < 16:
+		c := basic[n]
+		return c[0], c[1], c[2], true
+	case n < 232:
+		// 16-231：6×6×6 颜色立方体，通道取值为 0,95,135,175,215,255。
+		n -= 16
+		level := func(i int) int {
+			if i == 0 {
+				return 0
+			}
+			return 55 + 40*i
+		}
+		return level(n / 36), level(n / 6 % 6), level(n % 6), true
+	default:
+		// 232-255：灰度阶梯。
+		v := 8 + 10*(n-232)
+		return v, v, v, true
 	}
 }
 

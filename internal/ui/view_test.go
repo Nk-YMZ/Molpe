@@ -107,6 +107,35 @@ func TestRenderLyricsWindow(t *testing.T) {
 	}
 }
 
+func TestRenderLyricsGradient(t *testing.T) {
+	sty := testStyles()
+	// 文本统一为同一字符，渲染结果的差异只来自颜色。
+	lines := []string{"词", "词", "词", "词", "词", "词", "词", "词", "词"}
+	// 9 行窗口、当前句居中：上侧 4 句颜色应逐行变暗且互不重复。
+	got := strings.Split(renderLyrics(lines, 4, 9, 0, sty), "\n")
+	if len(got) != 9 {
+		t.Fatalf("歌词区应为 9 行: %d", len(got))
+	}
+	seen := map[string]int{}
+	for _, i := range []int{5, 6, 7, 8} { // 当前句之下，距离 1-4
+		if _, dup := seen[got[i]]; dup {
+			t.Errorf("第 %d 行与其他行颜色重复，渐变应逐行不同", i)
+		}
+		seen[got[i]] = i
+	}
+	// 上下对称位置（与当前句等距）的颜色应一致。
+	if got[3] != got[5] || got[2] != got[6] || got[1] != got[7] || got[0] != got[8] {
+		t.Error("与当前句等距的行应使用相同颜色")
+	}
+	// 渐变不可用时回退两档：相邻句前景色、远端微光色。
+	plain := sty
+	plain.lyricRamp = nil
+	fb := strings.Split(renderLyrics(lines, 4, 9, 0, plain), "\n")
+	if fb[3] == fb[0] {
+		t.Error("回退时相邻句与最远端应分属前景/微光两档")
+	}
+}
+
 func TestRenderProgress(t *testing.T) {
 	sty := testStyles()
 	if got := renderProgress(progressView{}, 80, sty); got != "" {
