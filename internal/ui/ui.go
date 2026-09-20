@@ -161,6 +161,10 @@ type Model struct {
 	progressTicking bool    // 进度条定时器是否在运行
 	progressSeq     int     // 定时器序号，用于丢弃暂停/切歌后残留的过期定时器
 
+	songGap int           // 相邻歌曲间的静默间隔秒数（配置 song_gap，0 为连播）
+	gapSong *netease.Song // 间隔中待开播的下一首；nil 表示不在间隔中
+	gapSeq  int           // 间隔定时器序号，用于丢弃切歌/点歌后残留的过期定时器
+
 	revealTarget  []rune // 逐字出现的目标文本（切歌后的“歌名 - 艺术家”）
 	revealN       int    // 已出现的字符数
 	revealSeq     int    // 定时器序号，用于丢弃切歌后残留的过期定时器
@@ -187,6 +191,7 @@ func New(client *netease.Client, cfg config.Config, dirs config.Dirs, theme Them
 		quality:          netease.NormalizeQuality(cfg.Quality),
 		volume:           cfg.EffectiveVolume(),
 		lyricLines:       cfg.EffectiveLyricLines(),
+		songGap:          cfg.EffectiveSongGap(),
 		lyricGapAbove:    cfg.EffectiveLyricGapAbove(),
 		lyricGapBelow:    cfg.EffectiveLyricGapBelow(),
 		playbackGapBelow: cfg.EffectivePlaybackGapBelow(),
@@ -377,7 +382,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, listenEndCmd(m.endCh)
 		}
 		m.saveQueue()
+		if m.songGap > 0 {
+			return m.startGap(song)
+		}
 		return m, tea.Batch(m.playCmd(song), listenEndCmd(m.endCh))
+	case gapExpiredMsg:
+		if msg.seq != m.gapSeq || m.gapSong == nil {
+			return m, nil // 过期定时器（切歌/点歌后残留）
+		}
+		return m.playGapSong()
 	case mprisEventMsg:
 		return m.handleMprisEvent(mpris.Event(msg))
 	}
@@ -488,7 +501,9 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			song := m.songs.data[i]
 			// 手动点歌：更新歌单队列并记录历史；下一首播放队列保留。
-			// 点歌是明确的播放意图，解除暂停状态（mpv 的 pause 属性跨 loadfile 保持）。
+			// 点歌是明确的播放意图，解除暂停状态与歌曲间隔
+			// （mpv 的 pause 属性跨 loadfile 保持）。
+			m.cancelGap()
 			m.queue.SetPlaylist(m.songs.data)
 			m.queue.Play(song)
 			m.paused = false
@@ -525,8 +540,9 @@ func (m *Model) setNote(s string) tea.Cmd {
 }
 
 // nextSong 播放队列中的下一首（历史前进 → 下一首队列 → 播放模式）。
-// 切歌是明确的播放意图，暂停状态也随之解除。
+// 切歌是明确的播放意图，暂停状态与歌曲间隔随之解除。
 func (m Model) nextSong() (tea.Model, tea.Cmd) {
+	m.cancelGap()
 	song, ok := m.queue.Next()
 	if !ok {
 		return m, m.setNote("没有可播放的下一首")
@@ -536,9 +552,9 @@ func (m Model) nextSong() (tea.Model, tea.Cmd) {
 	return m, m.playCmd(song)
 }
 
-// prevSong 沿历史队列回退一首。
-// prevSong 沿历史队列回退一首；暂停状态随之解除。
+// prevSong 沿历史队列回退一首；暂停状态与歌曲间隔随之解除。
 func (m Model) prevSong() (tea.Model, tea.Cmd) {
+	m.cancelGap()
 	song, ok := m.queue.Prev()
 	if !ok {
 		return m, m.setNote("没有更早的播放记录")
@@ -600,6 +616,10 @@ func (m *Model) saveConfig() {
 func (m Model) toggleOrResume() (tea.Model, tea.Cmd) {
 	if m.playing == nil {
 		return m, nil
+	}
+	if m.gapSong != nil {
+		// 歌曲间隔中没有可暂停的内容：播放键即跳过等待，立即开播下一首。
+		return m.playGapSong()
 	}
 	if _, err := m.player.get(); err != nil {
 		// 待播状态：开始播放（handleSongURL 会保留 m.paused，这里先行解除）。
@@ -741,6 +761,11 @@ func (m Model) handleMprisEvent(ev mpris.Event) (Model, tea.Cmd) {
 		nm, cmd := m.toggleOrResume()
 		return nm.(Model), tea.Batch(cmd, listen)
 	case mpris.EventPlay:
+		if m.gapSong != nil {
+			// 歌曲间隔中：播放键即跳过等待，立即开播下一首。
+			nm, cmd := m.playGapSong()
+			return nm.(Model), tea.Batch(cmd, listen)
+		}
 		if m.playing != nil {
 			if _, err := m.player.get(); err != nil {
 				// 待播状态下尚未启动播放器，直接拉取地址开始播放

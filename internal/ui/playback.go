@@ -21,6 +21,48 @@ type mprisEventMsg mpris.Event
 // playerEndedMsg 表示当前曲目自然播完（mpv end-file/eof），应自动连播。
 type playerEndedMsg struct{}
 
+// gapExpiredMsg 歌曲间隔到期消息；seq 与 Model.gapSeq 不一致时说明是
+// 切歌/点歌后残留的过期定时器，直接丢弃。
+type gapExpiredMsg struct{ seq int }
+
+// startGap 进入歌曲间隔：下一首置为待播（暂停）状态，并安排到期自动开播。
+// 间隔期间除该一次性定时器外无其他后台活动；任何播放意图（播放键/切歌/
+// 点歌）都会取消间隔立即开播。
+func (m Model) startGap(song netease.Song) (tea.Model, tea.Cmd) {
+	m.gapSong = &song
+	m.gapSeq++
+	seq := m.gapSeq
+	m.playing = &playingInfo{song: song, level: m.quality}
+	m.paused = true
+	m.progressPos = 0
+	// 旧歌词随上一首结束清除，残留滚动定时器由序号作废。
+	m.lyrics = nil
+	m.lyricCur = -1
+	m.lyricTicking = false
+	m.lyricSeq++
+	m.publishState()
+	m.refreshQueuePopup()
+	gap := time.Duration(m.songGap) * time.Second
+	return m, tea.Batch(
+		tea.Tick(gap, func(time.Time) tea.Msg { return gapExpiredMsg{seq} }),
+		listenEndCmd(m.endCh),
+	)
+}
+
+// cancelGap 取消进行中的歌曲间隔：递增序号使残留定时器到期时被丢弃。
+func (m *Model) cancelGap() {
+	m.gapSong = nil
+	m.gapSeq++
+}
+
+// playGapSong 跳过剩余间隔，立即开播待播的下一首。
+func (m Model) playGapSong() (tea.Model, tea.Cmd) {
+	song := *m.gapSong
+	m.cancelGap()
+	m.paused = false
+	return m, m.playCmd(song)
+}
+
 // progressInterval 进度条刷新间隔。仅在播放中运行，暂停时完全停止。
 const progressInterval = time.Second
 

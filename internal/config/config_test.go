@@ -55,6 +55,25 @@ func TestEffectiveRandomNoRepeat(t *testing.T) {
 	}
 }
 
+func TestEffectiveSongGap(t *testing.T) {
+	c := DefaultConfig()
+	if got := c.EffectiveSongGap(); got != 0 {
+		t.Errorf("EffectiveSongGap() = %d，预期 0（连播）", got)
+	}
+	c.SongGap = 3
+	if got := c.EffectiveSongGap(); got != 3 {
+		t.Errorf("EffectiveSongGap() = %d，预期 3", got)
+	}
+	c.SongGap = -1
+	if got := c.EffectiveSongGap(); got != 0 {
+		t.Errorf("负值应回退默认 0，得到 %d", got)
+	}
+	c.SongGap = 601
+	if got := c.EffectiveSongGap(); got != 0 {
+		t.Errorf("超过上限应回退默认 0，得到 %d", got)
+	}
+}
+
 func TestDefaultDirsRespectsXDGEnv(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/tmp/xdg-config")
 	t.Setenv("XDG_DATA_HOME", "/tmp/xdg-data")
@@ -157,6 +176,9 @@ func TestLoadConfigCreatesCompleteTemplate(t *testing.T) {
 	if file.RandomNoRepeat != 1 {
 		t.Errorf("随机回避窗口默认值 = %d，预期 1", file.RandomNoRepeat)
 	}
+	if file.SongGap != 0 {
+		t.Errorf("歌曲间隔默认值 = %d，预期 0", file.SongGap)
+	}
 	for name, help := range map[string]string{
 		"quality":            file.Help.Quality,
 		"auto_play":          file.Help.AutoPlay,
@@ -168,6 +190,7 @@ func TestLoadConfigCreatesCompleteTemplate(t *testing.T) {
 		"lyric_gap_below":    file.Help.LyricGapBelow,
 		"playback_gap_below": file.Help.PlaybackGapBelow,
 		"random_no_repeat":   file.Help.RandomNoRepeat,
+		"song_gap":           file.Help.SongGap,
 		"theme":              file.Help.Theme,
 	} {
 		if help == "" {

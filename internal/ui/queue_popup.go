@@ -206,6 +206,7 @@ func (m Model) deletePopupRow() (tea.Model, tea.Cmd) {
 	d := p.cursor
 
 	if row.kind == rowCurrent {
+		m.cancelGap()
 		m.queue.RemoveCurrent()
 		song, ok := m.queue.Next()
 		m.saveQueue()
