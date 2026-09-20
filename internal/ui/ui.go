@@ -196,7 +196,7 @@ func New(client *netease.Client, cfg config.Config, dirs config.Dirs, theme Them
 		keys:             defaultKeyMap(),
 		login:            newLoginModel(client),
 		player:           &playerHolder{},
-		queue:            queue.New(nil, queue.ModeLoop, queue.Options{}),
+		queue:            queue.New(nil, queue.ModeLoop, queue.Options{RandomNoRepeat: cfg.EffectiveRandomNoRepeat()}),
 		endCh:            make(chan struct{}, 1),
 
 		cleanupOnce: &sync.Once{},

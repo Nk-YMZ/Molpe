@@ -20,7 +20,8 @@ const (
 	ModeSequential Mode = iota
 	// ModeLoop 列表循环：播到末尾回到歌单开头。
 	ModeLoop
-	// ModeRandom 随机播放：下一首在歌单中除当前歌曲外等概率选取。
+	// ModeRandom 随机播放：下一首在歌单内等概率选取，但不与最近
+	// RandomNoRepeat 首已播放的歌曲重复（见 Options.RandomNoRepeat）。
 	ModeRandom
 )
 
@@ -30,6 +31,11 @@ const defaultHistoryLimit = 100
 type Options struct {
 	// HistoryLimit 历史队列上限；<= 0 时使用默认值 100。
 	HistoryLimit int
+	// RandomNoRepeat 随机播放的回避窗口大小：不与最近 n 首已播放且属于
+	// 当前歌单的歌曲重复（按歌曲 ID 去重）；0 表示完全随机（可立即重复
+	// 当前曲），负值按 0 处理；窗口自动收敛为 min(n, 歌单长度-1)，
+	// 保证候选集非空。
+	RandomNoRepeat int
 }
 
 // Queue 播放队列。不是并发安全的，由调用方保证单 goroutine 访问。
@@ -167,7 +173,7 @@ func (q *Queue) pick() (netease.Song, bool) {
 	case ModeLoop:
 		return q.songs[(cur+1)%len(q.songs)], true
 	case ModeRandom:
-		return q.songs[q.randomIndex(cur)], true
+		return q.randomPick()
 	default: // ModeSequential
 		if cur+1 >= len(q.songs) {
 			return netease.Song{}, false
@@ -190,18 +196,49 @@ func (q *Queue) currentIndex() int {
 	return -1
 }
 
-// randomIndex 在歌单内等概率选取一个下标；当前曲在歌单中时排除当前曲。
-// 歌单仅一首歌时重复播放该曲。
-func (q *Queue) randomIndex(cur int) int {
-	n := len(q.songs)
-	if n <= 1 || cur < 0 {
-		return rand.IntN(n)
+// randomPick 随机选取下一首：候选为歌单中不在回避窗口内的歌曲，等概率选取。
+// 窗口大小经 noRepeatLimit 收敛，候选集保证非空。
+func (q *Queue) randomPick() (netease.Song, bool) {
+	if n := q.noRepeatLimit(); n > 0 {
+		excluded := q.recentIDs(n)
+		candidates := make([]int, 0, len(q.songs))
+		for i, s := range q.songs {
+			if _, skip := excluded[s.ID]; !skip {
+				candidates = append(candidates, i)
+			}
+		}
+		if len(candidates) > 0 {
+			return q.songs[candidates[rand.IntN(len(candidates))]], true
+		}
+		// 兜底：窗口收敛已保证候选非空，此处防御历史与歌单不同步等异常。
 	}
-	i := rand.IntN(n - 1)
-	if i >= cur {
-		i++
+	return q.songs[rand.IntN(len(q.songs))], true
+}
+
+// noRepeatLimit 返回生效的回避窗口大小：min(RandomNoRepeat, 歌单长度-1)，
+// 保证至少留出一首候选；负值按 0 处理（完全随机）。
+func (q *Queue) noRepeatLimit() int {
+	if n := min(q.opts.RandomNoRepeat, len(q.songs)-1); n > 0 {
+		return n
 	}
-	return i
+	return 0
+}
+
+// recentIDs 从当前播放位置（含当前曲）沿历史向前收集属于当前歌单的歌曲 ID，
+// 按 ID 去重，最多收集 limit 个；其他歌单的历史歌曲不占窗口。
+func (q *Queue) recentIDs(limit int) map[int64]struct{} {
+	inPlaylist := make(map[int64]struct{}, len(q.songs))
+	for _, s := range q.songs {
+		inPlaylist[s.ID] = struct{}{}
+	}
+	ids := make(map[int64]struct{}, limit)
+	for i := min(q.hpos, len(q.history)-1); i >= 0 && len(ids) < limit; i-- {
+		id := q.history[i].ID
+		if _, ok := inPlaylist[id]; ok {
+			ids[id] = struct{}{}
+		}
+	}
+	return ids
 }
 
 // History 返回完整历史记录的副本，按时间正序（越早越靠前）。

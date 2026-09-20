@@ -49,7 +49,7 @@ func TestLoop(t *testing.T) {
 }
 
 func TestRandomExcludesCurrent(t *testing.T) {
-	q := New(songs(1, 2), ModeRandom, Options{})
+	q := New(songs(1, 2), ModeRandom, Options{RandomNoRepeat: 1})
 	q.Play(netease.Song{ID: 1})
 	for range 50 {
 		if s := mustNext(t, q); s.ID != 2 {
@@ -59,8 +59,83 @@ func TestRandomExcludesCurrent(t *testing.T) {
 	}
 }
 
+func TestRandomNoRepeatZero(t *testing.T) {
+	q := New(songs(1, 2), ModeRandom, Options{RandomNoRepeat: 0})
+	q.Play(netease.Song{ID: 1})
+	// 完全随机允许立即重复当前曲：连续 100 次选取应至少出现一次重复。
+	repeated := false
+	prev := int64(1)
+	for range 100 {
+		s := mustNext(t, q)
+		if s.ID == prev {
+			repeated = true
+			break
+		}
+		prev = s.ID
+	}
+	if !repeated {
+		t.Fatal("RandomNoRepeat=0 应允许立即重复当前曲")
+	}
+}
+
+func TestRandomNoRepeatWindow(t *testing.T) {
+	q := New(songs(1, 2, 3, 4), ModeRandom, Options{RandomNoRepeat: 2})
+	q.Play(netease.Song{ID: 1})
+	// 每次选取都不得与最近 2 首重复。
+	recent := []int64{1}
+	for range 100 {
+		s := mustNext(t, q)
+		for _, id := range recent {
+			if s.ID == id {
+				t.Fatalf("随机播放与最近 %d 首重复，得到 %d（窗口 %v）", len(recent), s.ID, recent)
+			}
+		}
+		recent = append(recent, s.ID)
+		if len(recent) > 2 {
+			recent = recent[1:]
+		}
+	}
+}
+
+func TestRandomNoRepeatIgnoresOtherPlaylists(t *testing.T) {
+	q := New(songs(1, 2, 3), ModeRandom, Options{RandomNoRepeat: 2})
+	q.Play(netease.Song{ID: 1})
+	// 其他歌单的历史歌曲不占窗口：历史 [1, 7, 2]，窗口内只有 2、1。
+	q.SetPlaylist(songs(7, 8, 9))
+	q.Play(netease.Song{ID: 7})
+	q.SetPlaylist(songs(1, 2, 3))
+	q.Play(netease.Song{ID: 2})
+	if s := mustNext(t, q); s.ID != 3 {
+		t.Fatalf("窗口应只含当前歌单歌曲 2、1，Next = %d，预期 3", s.ID)
+	}
+}
+
+func TestRandomNoRepeatDeduplicates(t *testing.T) {
+	q := New(songs(1, 2, 3), ModeRandom, Options{RandomNoRepeat: 2})
+	// 历史 [1, 2, 1]：窗口按歌曲去重后为 {1, 2}，候选只剩 3。
+	q.Play(netease.Song{ID: 1})
+	q.Play(netease.Song{ID: 2})
+	q.Play(netease.Song{ID: 1})
+	if s := mustNext(t, q); s.ID != 3 {
+		t.Fatalf("窗口应按歌曲去重，Next = %d，预期 3", s.ID)
+	}
+}
+
+func TestRandomNoRepeatDegrades(t *testing.T) {
+	// 窗口超过歌单长度时收敛为 m-1：歌单 2 首时窗口为 1，只排除当前曲。
+	q := New(songs(1, 2), ModeRandom, Options{RandomNoRepeat: 5})
+	q.Play(netease.Song{ID: 1})
+	for range 50 {
+		if s := mustNext(t, q); s.ID != 2 {
+			t.Fatalf("窗口收敛后应只排除当前曲，得到 %d", s.ID)
+		}
+		q.Play(netease.Song{ID: 1})
+	}
+}
+
 func TestRandomSingleSongRepeats(t *testing.T) {
-	q := New(songs(1), ModeRandom, Options{})
+	// 窗口收敛为 min(n, m-1)：单曲歌单窗口为 0，重复播放该曲。
+	q := New(songs(1), ModeRandom, Options{RandomNoRepeat: 3})
 	q.Play(netease.Song{ID: 1})
 	if s := mustNext(t, q); s.ID != 1 {
 		t.Fatalf("单曲歌单应重复播放，得到 %d", s.ID)

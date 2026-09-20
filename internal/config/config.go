@@ -37,17 +37,23 @@ type Config struct {
 	LyricGapBelow *int `json:"lyric_gap_below,omitempty"`
 	// PlaybackGapBelow 播放信息块（进度条 + 当前歌曲信息）与操作帮助行之间的空行数；null、<0 或 >10 时使用默认值 1。
 	PlaybackGapBelow *int `json:"playback_gap_below,omitempty"`
+	// RandomNoRepeat 随机播放的回避窗口大小：不与最近多少首已播放歌曲重复；
+	// 范围 0-100，0 表示完全随机，越界时使用默认值 1；修改后重新启动程序生效。
+	RandomNoRepeat int `json:"random_no_repeat,omitempty"`
 	// Theme 主题名；内置 default/ember，其他名称对应扩展目录 themes/<name>.json；空使用默认主题。
 	Theme string `json:"theme,omitempty"`
 }
 
 const (
-	defaultVolume     = 100
-	defaultVolumeStep = 5
-	defaultLyricLines = 5
-	maxLyricLines     = 15
-	defaultSectionGap = 1
-	maxSectionGap     = 10
+	defaultVolume         = 100
+	defaultVolumeStep     = 5
+	defaultLyricLines     = 5
+	maxLyricLines         = 15
+	defaultSectionGap     = 1
+	maxSectionGap         = 10
+	defaultRandomNoRepeat = 1
+	// maxRandomNoRepeat 与队列历史默认上限一致：更大的窗口会被历史长度截断，没有意义。
+	maxRandomNoRepeat = 100
 )
 
 // DefaultConfig 返回默认配置。
@@ -64,6 +70,7 @@ func DefaultConfig() Config {
 		LyricGapAbove:    &above,
 		LyricGapBelow:    &below,
 		PlaybackGapBelow: &playbackBelow,
+		RandomNoRepeat:   defaultRandomNoRepeat,
 		Theme:            defaultTheme,
 	}
 }
@@ -115,6 +122,14 @@ func (c Config) EffectivePlaybackGapBelow() int {
 	return effectiveGap(c.PlaybackGapBelow)
 }
 
+// EffectiveRandomNoRepeat 返回生效的随机播放回避窗口大小（0-100）。
+func (c Config) EffectiveRandomNoRepeat() int {
+	if c.RandomNoRepeat < 0 || c.RandomNoRepeat > maxRandomNoRepeat {
+		return defaultRandomNoRepeat
+	}
+	return c.RandomNoRepeat
+}
+
 // effectiveGap 校验界面区块间距：null 或越界回退默认值，0 是合法的紧凑间距。
 func effectiveGap(v *int) int {
 	if v == nil || *v < 0 || *v > maxSectionGap {
@@ -154,6 +169,7 @@ type configHelp struct {
 	LyricGapAbove    string `json:"lyric_gap_above"`
 	LyricGapBelow    string `json:"lyric_gap_below"`
 	PlaybackGapBelow string `json:"playback_gap_below"`
+	RandomNoRepeat   string `json:"random_no_repeat"`
 	Theme            string `json:"theme"`
 }
 
@@ -170,6 +186,7 @@ type configFileData struct {
 	LyricGapAbove    int        `json:"lyric_gap_above"`
 	LyricGapBelow    int        `json:"lyric_gap_below"`
 	PlaybackGapBelow int        `json:"playback_gap_below"`
+	RandomNoRepeat   int        `json:"random_no_repeat"`
 	Theme            string     `json:"theme"`
 }
 
@@ -189,6 +206,7 @@ func newConfigFileData(cfg Config) configFileData {
 			LyricGapAbove:    "歌词区域与上方正文区域之间的空行数；整数，范围：0-10",
 			LyricGapBelow:    "歌词区域与下方进度条之间的空行数；整数，范围：0-10",
 			PlaybackGapBelow: "播放信息块（进度条和当前歌曲信息）与操作帮助行之间的空行数；整数，范围：0-10",
+			RandomNoRepeat:   "随机播放回避窗口：不与最近多少首已播放歌曲重复；整数，范围：0-100，0 表示完全随机；只统计当前歌单内的历史并按歌曲去重，超过歌单长度时自动收敛；修改后重启生效",
 			Theme:            "主题名称；内置值：default、ember；其他字符串对应扩展目录 themes/<名称>.json",
 		},
 		Quality:          cfg.Quality,
@@ -200,6 +218,7 @@ func newConfigFileData(cfg Config) configFileData {
 		LyricGapAbove:    cfg.EffectiveLyricGapAbove(),
 		LyricGapBelow:    cfg.EffectiveLyricGapBelow(),
 		PlaybackGapBelow: cfg.EffectivePlaybackGapBelow(),
+		RandomNoRepeat:   cfg.EffectiveRandomNoRepeat(),
 		Theme:            theme,
 	}
 }

@@ -32,6 +32,29 @@ func TestEffectiveVolumeDefaults(t *testing.T) {
 	}
 }
 
+func TestEffectiveRandomNoRepeat(t *testing.T) {
+	c := DefaultConfig()
+	if got := c.EffectiveRandomNoRepeat(); got != 1 {
+		t.Errorf("EffectiveRandomNoRepeat() = %d，预期 1", got)
+	}
+	c.RandomNoRepeat = 0
+	if got := c.EffectiveRandomNoRepeat(); got != 0 {
+		t.Errorf("0 是合法值（完全随机），得到 %d", got)
+	}
+	c.RandomNoRepeat = 100
+	if got := c.EffectiveRandomNoRepeat(); got != 100 {
+		t.Errorf("EffectiveRandomNoRepeat() = %d，预期 100", got)
+	}
+	c.RandomNoRepeat = -1
+	if got := c.EffectiveRandomNoRepeat(); got != 1 {
+		t.Errorf("负值应回退默认 1，得到 %d", got)
+	}
+	c.RandomNoRepeat = 101
+	if got := c.EffectiveRandomNoRepeat(); got != 1 {
+		t.Errorf("超过历史上限的值应回退默认 1，得到 %d", got)
+	}
+}
+
 func TestDefaultDirsRespectsXDGEnv(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/tmp/xdg-config")
 	t.Setenv("XDG_DATA_HOME", "/tmp/xdg-data")
@@ -131,6 +154,9 @@ func TestLoadConfigCreatesCompleteTemplate(t *testing.T) {
 	if file.Theme != defaultTheme {
 		t.Errorf("默认主题 = %q，预期 %q", file.Theme, defaultTheme)
 	}
+	if file.RandomNoRepeat != 1 {
+		t.Errorf("随机回避窗口默认值 = %d，预期 1", file.RandomNoRepeat)
+	}
 	for name, help := range map[string]string{
 		"quality":            file.Help.Quality,
 		"auto_play":          file.Help.AutoPlay,
@@ -141,6 +167,7 @@ func TestLoadConfigCreatesCompleteTemplate(t *testing.T) {
 		"lyric_gap_above":    file.Help.LyricGapAbove,
 		"lyric_gap_below":    file.Help.LyricGapBelow,
 		"playback_gap_below": file.Help.PlaybackGapBelow,
+		"random_no_repeat":   file.Help.RandomNoRepeat,
 		"theme":              file.Help.Theme,
 	} {
 		if help == "" {
