@@ -376,6 +376,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !ok {
 			m.playing = nil
 			m.paused = false
+			// 歌词随播放停止清除，残留滚动定时器由序号作废。
+			m.lyrics = nil
+			m.lyricCur = -1
+			m.lyricTicking = false
+			m.lyricSeq++
 			m.publishState()
 			m.saveQueue()
 			m.popup.open = false

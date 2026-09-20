@@ -214,9 +214,15 @@ func (m Model) deletePopupRow() (tea.Model, tea.Cmd) {
 			// 没有可播放的下一首：停止播放并关闭弹窗。
 			if pl, err := m.player.get(); err == nil {
 				pl.Close()
+				m.player.set(nil) // 播放器已关闭，下次播放时重建
 			}
 			m.playing = nil
 			m.paused = false
+			// 歌词随播放停止清除，残留滚动定时器由序号作废。
+			m.lyrics = nil
+			m.lyricCur = -1
+			m.lyricTicking = false
+			m.lyricSeq++
 			m.publishState()
 			p.open = false
 			return m, m.setNote("队列已播完")

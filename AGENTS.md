@@ -201,7 +201,7 @@ UI 分层约定（交互/渲染解耦）：
 - 音质从面向用户的 `$XDG_CONFIG_HOME/molpe/config.json` 读取，支持
   `standard`、`higher`、`exhigh`、`lossless`、`hires`
 - 运行期间不提供音质切换弹窗；修改配置后重新启动程序生效
-- Hi-Res 实际状态会结合 mpv 加载后的采样率/位深校正，避免接口返回等级与实际流参数不一致
+- 音质等级直接采用 EAPI 接口返回值（与实际文件一致），展示为当前曲目的实际音质
 - 退出 TUI 时关闭 mpv 子进程并清理 IPC socket
 
 MPRIS 桌面集成已实现（总线名 `org.mpris.MediaPlayer2.molpe`）：

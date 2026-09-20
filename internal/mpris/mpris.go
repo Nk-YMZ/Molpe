@@ -171,6 +171,11 @@ func (s *Service) emitChanged(iface, name string) {
 // ---- org.freedesktop.DBus.Properties ----
 
 func (s *Service) get(iface, name string) (dbus.Variant, *dbus.Error) {
+	// Position 提前处理：positionFn 不可变且调用可能阻塞（查询 mpv 播放位置），
+	// 若在 s.mu 持锁期间执行，mpv 卡顿时会连带阻塞 UI 侧的 SetTrack/SetStatus。
+	if iface == ifacePlayer && name == "Position" {
+		return dbus.MakeVariant(s.positionMicros()), nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	switch iface {
@@ -191,8 +196,6 @@ func (s *Service) get(iface, name string) (dbus.Variant, *dbus.Error) {
 			return dbus.MakeVariant(s.status), nil
 		case "Metadata":
 			return dbus.MakeVariant(s.metadata), nil
-		case "Position":
-			return dbus.MakeVariant(s.positionMicros()), nil
 		case "Rate":
 			return dbus.MakeVariant(1.0), nil
 		case "Volume":

@@ -1,7 +1,7 @@
 # Maintainer: Nk-YMZ <village_flute@outlook.com>
 
 pkgname=molpe
-pkgver=1.0.0
+pkgver=1.1.0
 pkgrel=1
 pkgdesc='Linux 终端中的网易云音乐 TUI 播放器'
 arch=('x86_64')
