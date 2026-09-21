@@ -216,4 +216,8 @@ Arch Linux 打包：
 - 版本从 Git 标签 `v<版本>` 发布，根目录 `PKGBUILD` 从对应标签构建源码包
 - 软件包安装可执行文件到 `/usr/bin/molpe`，运行时依赖 `glibc` 与 `mpv`
 - GitHub Release 附带 `molpe-<版本>-<pkgrel>-x86_64.pkg.tar.zst`；本地产物放在忽略提交的 `dist/`
-- AUR 预编译包名为 `molpe-bin`，仅从 GitHub Release 下载产物，安装后的启动命令仍为 `molpe`
+- AUR 预编译包名为 `molpe-bin`，仅从 GitHub Release 下载产物，安装后的启动命令仍为 `molpe`；
+  AUR 仓库克隆为项目根目录下的嵌套仓库 `molpe-bin/`（已 gitignore，独立提交推送）
+- 本地打包必须保持仓库干净：`mkdir -p /tmp/molpe-build &&
+  BUILDDIR=/tmp/molpe-build SRCDEST=/tmp/molpe-build PKGDEST=dist makepkg -f`，
+  不得在仓库根目录裸跑 makepkg（会留下 src/、pkg/、molpe/ 杂物）

@@ -1,5 +1,4 @@
 # 构建产物
-/mountain-air
 /dist/
 *.test
 *.out
@@ -12,5 +11,10 @@ cookie*
 *.swp
 .DS_Store
 
-# 误置入的嵌套仓库目录
+# 嵌套仓库：makepkg 克隆的源码、AUR 仓库克隆
 /molpe/
+/molpe-bin/
+
+# makepkg 工作目录（规范做法见 AGENTS.md，此项仅为兜底）
+/pkg/
+/src/
