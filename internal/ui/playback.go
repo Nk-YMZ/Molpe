@@ -35,6 +35,7 @@ func (m Model) startGap(song netease.Song) (tea.Model, tea.Cmd) {
 	m.playing = &playingInfo{song: song, level: m.quality}
 	m.paused = true
 	m.progressPos = 0
+	m.pos.set(0)
 	// 旧歌词随上一首结束清除，残留滚动定时器由序号作废。
 	m.lyrics = nil
 	m.lyricCur = -1

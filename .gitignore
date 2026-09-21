@@ -11,3 +11,6 @@ cookie*
 # 编辑器与系统文件
 *.swp
 .DS_Store
+
+# 误置入的嵌套仓库目录
+/molpe/

@@ -101,14 +101,24 @@ func (h *playerHolder) get() (*player.Player, error) {
 	return h.p, nil
 }
 
-func (h *playerHolder) position() (float64, error) {
+// posHolder 缓存当前播放位置（秒），供 MPRIS 的 Position 查询直接读取，
+// 避免桌面环境每秒轮询时新建 IPC 连接打醒 mpv。播放中由进度条定时器
+// 每秒刷新一次，暂停时保持冻结值。指针共享，Model 按值拷贝不受影响。
+type posHolder struct {
+	mu  sync.Mutex
+	pos float64
+}
+
+func (h *posHolder) set(pos float64) {
 	h.mu.Lock()
-	p := h.p
+	h.pos = pos
 	h.mu.Unlock()
-	if p == nil {
-		return 0, fmt.Errorf("播放器未启动")
-	}
-	return p.Position()
+}
+
+func (h *posHolder) get() (float64, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.pos, nil
 }
 
 // Model 是 TUI 的根模型。
@@ -137,6 +147,7 @@ type Model struct {
 	picker    themePicker // 主题选择弹窗
 
 	player   *playerHolder
+	pos      *posHolder // 播放位置缓存，供 MPRIS Position 查询读取
 	queue    *queue.Queue
 	endCh    chan struct{}  // mpv 自然播完通知
 	mpris    *mpris.Service // 为 nil 表示桌面集成不可用
@@ -201,6 +212,7 @@ func New(client *netease.Client, cfg config.Config, dirs config.Dirs, theme Them
 		keys:             defaultKeyMap(),
 		login:            newLoginModel(client),
 		player:           &playerHolder{},
+		pos:              &posHolder{},
 		queue:            queue.New(nil, queue.ModeLoop, queue.Options{RandomNoRepeat: cfg.EffectiveRandomNoRepeat()}),
 		endCh:            make(chan struct{}, 1),
 
@@ -216,7 +228,7 @@ func New(client *netease.Client, cfg config.Config, dirs config.Dirs, theme Them
 		m.errNote += "主题加载失败，已使用默认主题：" + themeErr.Error()
 	}
 	// MPRIS 不可用时仅记录，不影响主体功能。
-	m.mpris, m.mprisErr = mpris.New(m.player.position)
+	m.mpris, m.mprisErr = mpris.New(m.pos.get)
 	if m.mpris != nil {
 		m.mpris.SetVolume(float64(m.volume) / 100)
 	}
@@ -355,6 +367,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if p, err := m.player.get(); err == nil {
 			if pos, err := p.Position(); err == nil {
 				m.progressPos = pos
+				m.pos.set(pos)
 			}
 		}
 		return m, m.scheduleProgressTick()
@@ -374,9 +387,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// 自然播完：按队列规则连播；无可播歌曲（顺序模式到末尾）时停止。
 		song, ok := m.queue.Next()
 		if !ok {
-			m.playing = nil
-			m.paused = false
-			// 歌词随播放停止清除，残留滚动定时器由序号作废。
+		m.playing = nil
+		m.paused = false
+		m.progressPos = 0
+		m.pos.set(0)
+		// 歌词随播放停止清除，残留滚动定时器由序号作废。
 			m.lyrics = nil
 			m.lyricCur = -1
 			m.lyricTicking = false
@@ -694,6 +709,7 @@ func (m Model) handleSongURL(msg songURLFetchedMsg) (tea.Model, tea.Cmd) {
 	m.lyricSeq++
 	// 进度条位置归零（进度条常显，由新曲目的元数据时长立即重绘）。
 	m.progressPos = 0
+	m.pos.set(0)
 	m.progressTicking = false
 	m.progressSeq++
 	// 曲名逐字出现：重置目标文本并丢弃旧定时器。
