@@ -15,6 +15,9 @@ cookie*
 /molpe/
 /molpe-bin/
 
+# 本地构建的可执行文件
+/molpe
+
 # makepkg 工作目录（规范做法见 AGENTS.md，此项仅为兜底）
 /pkg/
 /src/

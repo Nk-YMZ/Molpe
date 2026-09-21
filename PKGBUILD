@@ -1,7 +1,7 @@
 # Maintainer: Nk-YMZ <village_flute@outlook.com>
 
 pkgname=molpe
-pkgver=1.1.1
+pkgver=1.2.0
 pkgrel=1
 pkgdesc='Linux 终端中的网易云音乐 TUI 播放器'
 arch=('x86_64')
@@ -46,5 +46,6 @@ check() {
 
 package() {
 	install -Dm755 "$pkgname/molpe" "$pkgdir/usr/bin/molpe"
+	install -Dm644 "$pkgname/molpe.service" "$pkgdir/usr/lib/systemd/user/molpe.service"
 	install -Dm644 "$pkgname/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

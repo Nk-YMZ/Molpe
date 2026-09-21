@@ -13,7 +13,8 @@
 - “下一首播放”队列，用户指定的歌曲拥有最高播放优先级
 - 支持 Hi-Res 音质
 - 通过 MPRIS 与 Linux 桌面环境通信，接受 KDE 媒体组件和媒体键控制
-- TUI 运行时播放；退出 TUI 后停止播放并清理相关进程
+- 前后端分离：TUI 可转入后台（仅保留播放守护进程，仅接受 MPRIS 控制），重开 TUI 即恢复；
+  完全退出后停止播放并清理相关进程
 
 ## 技术路线
 
@@ -27,15 +28,41 @@
 ## 项目结构
 
 ```
-main.go              入口（装配配置、netease 客户端、TUI）
+main.go              入口：子命令分发（`molpe` TUI 前端 / `molpe daemon` 播放守护进程）+ systemd 拉起
 internal/config/     XDG 目录解析；面向用户的 config.json（音质偏好等）
 internal/netease/    网易云接口封装：Cookie 持久化、二维码登录、账号信息、歌单、播放地址
 internal/player/     mpv 子进程控制（JSON IPC over unix socket）
+internal/queue/      播放队列核心逻辑（纯逻辑、可单测）
 internal/mpris/      MPRIS2 D-Bus 服务：向桌面环境暴露元数据/状态，接收媒体控制
-internal/ui/         Bubble Tea TUI：根模型 + 登录/歌单/歌曲页、主题、通用列表组件
+internal/server/     播放守护进程：聚合 netease/queue/player/mpris，单事件循环 + IPC 服务
+internal/ipc/        前后端通信协议（unix socket + JSON Lines）：消息类型、状态快照、客户端
+internal/ui/         Bubble Tea TUI（后端的纯客户端）：根模型 + 登录/歌单/歌曲页、主题、通用列表组件
 ```
 
-界面约定：纯键盘操作（不为鼠标做额外设计）；默认主题为纯黑背景（#000000）。
+## 前后端分离架构
+
+- **后端 `molpe daemon`**（`internal/server`）掌管播放、队列、网易云接口、MPRIS 与配置/队列
+  落盘，以 systemd --user 服务（`molpe.service`）形式按需运行：TUI 启动时若连不上 IPC socket
+  则 `systemctl --user start molpe.service` 拉起（打包安装的单元位于
+  `/usr/lib/systemd/user/`，缺失时自写 `~/.config/systemd/user/molpe.service` 指向当前
+  可执行文件；不 enable 开机自启）。systemd 不可用时报错并提示手动运行 `molpe daemon`。
+- **前端 `molpe`**（`internal/ui`）只掌管界面与交互：通过 unix socket
+  （`$XDG_RUNTIME_DIR/molpe/ipc.sock`，回退 `$XDG_CACHE_HOME/molpe/`）上的 JSON Lines
+  协议接收状态快照、发送命令；渲染层（theme.go/view.go）不变。同时只允许一个前端连接，
+  重复启动会提示已有界面在运行。
+- `q`/Ctrl+C 完全退出（通知后端停止播放并结束）；`Q` 转入后台（仅关闭 TUI 释放 shell，
+  后端继续播放，仅通过 MPRIS 接受控制）；再次运行 `molpe` 即重连恢复界面。
+- 后端稳态播放时无任何周期性定时器：唤醒源仅有 mpv IPC 事件、MPRIS D-Bus 消息、
+  IPC 客户端连接与一次性定时器（歌曲间隔、二维码轮询）；播放位置用「锚点 + 墙钟外推」
+  （仅在播放/暂停/切歌事件点向 mpv 查询一次），MPRIS Position 轮询纯内存计算，
+  前端进度条/歌词也基于锚点本地外推。后端事件循环为单 goroutine actor，
+  网络请求在 worker goroutine 执行、结果带序号回灌（沿用过期响应丢弃模式）。
+- 配置文件由后端统一写回（音量退出时固化、主题切换即写）；前端只读取显示相关字段
+  （theme、lyric_lines、各区块间距），避免双写互相覆盖。
+
+界面约定：纯键盘操作（不为鼠标做额外设计）；默认主题为纯黑背景（#000000）。TUI 是后端
+的纯客户端：交互层不持有 netease/player/queue/mpris 引用，状态来自 `ipc.State` 快照，
+操作通过 IPC 命令下发。
 
 UI 分层约定（交互/渲染解耦）：
 
@@ -114,11 +141,12 @@ UI 分层约定（交互/渲染解耦）：
 
 ## 当前状态
 
-二维码登录已完成并可运行：
+二维码登录已完成并可运行（二维码会话由后端持有：unikey 获取、每 2s 轮询、
+Cookie 接收均在 daemon 内进行；前端只负责把二维码 URL 渲染为字符画）：
 
-- 启动时检查登录态（已登录则先刷新 Cookie 再进主界面）
+- 后端启动时检查登录态（已登录则先刷新 Cookie），前端依快照进入歌单页或登录页
 - 未登录展示终端二维码（每 2s 轮询状态；800 过期 / 801 等待 / 802 待确认 / 803 成功）
-- `r` 手动刷新二维码；`q`/Ctrl+C 退出
+- `r` 手动刷新二维码；`q`/Ctrl+C 完全退出，`Q` 转入后台
 - Cookie 持久化到 `$XDG_DATA_HOME/molpe/cookies`（0600）
 
 歌单浏览已实现：
@@ -136,7 +164,7 @@ UI 分层约定（交互/渲染解耦）：
   歌单后续分区展示，当前曲目锚定窗口中央，限高滚动；delete/Ctrl+d 删除选中条目
   （删除当前曲自动跳转下一首），l/b/esc 关闭；随机模式不显示歌单后续
 - 切歌（点歌/上一首/下一首/弹窗删除当前曲）一律解除暂停自动开播；
-  `handleSongURL` 无条件将暂停状态同步给 mpv（其 pause 属性跨 loadfile 保持，不重置）
+  后端在播放时无条件将暂停状态同步给 mpv（其 pause 属性跨 loadfile 保持，不重置）
 
 歌词显示已实现（`internal/ui/lyrics.go`、`internal/netease/lyrics.go`）：
 
@@ -193,7 +221,7 @@ UI 分层约定（交互/渲染解耦）：
   - 支持从历史/下一首队列/歌单删除条目（RemoveHistory/RemoveNextUp/RemovePlaylist/RemoveCurrent）；
     当前曲为显式字段（持有副本），RemoveCurrent 保留歌单位置锚点以保证 Next 从原位置之后继续
 - 健壮性：网易云请求统一 15s 超时；播放地址请求带递增序号、歌单响应带歌单 ID，过期响应丢弃；
-  main 层对 SIGTERM 等非按键退出兜底清理 mpv/D-Bus；配置文件损坏时以默认配置运行并提示，
+  后端对 SIGTERM 等信号兜底清理 mpv/D-Bus/IPC socket；配置文件损坏时以默认配置运行并提示，
   且该次运行退出不写回
 - mpv 通过独立 IPC 长连接监听 `end-file`（仅 reason=eof）实现自然播完自动连播
 - 播放地址走 EAPI（官方客户端通道）：WEAPI 试听接口对会员歌曲的 Hi-Res
@@ -202,7 +230,7 @@ UI 分层约定（交互/渲染解耦）：
   `standard`、`higher`、`exhigh`、`lossless`、`hires`
 - 运行期间不提供音质切换弹窗；修改配置后重新启动程序生效
 - 音质等级直接采用 EAPI 接口返回值（与实际文件一致），展示为当前曲目的实际音质
-- 退出 TUI 时关闭 mpv 子进程并清理 IPC socket
+- 完全退出（`q` 或 `systemctl --user stop molpe`）时后端关闭 mpv 子进程并清理 IPC socket
 
 MPRIS 桌面集成已实现（总线名 `org.mpris.MediaPlayer2.molpe`）：
 
@@ -214,7 +242,8 @@ MPRIS 桌面集成已实现（总线名 `org.mpris.MediaPlayer2.molpe`）：
 Arch Linux 打包：
 
 - 版本从 Git 标签 `v<版本>` 发布，根目录 `PKGBUILD` 从对应标签构建源码包
-- 软件包安装可执行文件到 `/usr/bin/molpe`，运行时依赖 `glibc` 与 `mpv`
+- 软件包安装可执行文件到 `/usr/bin/molpe`、systemd 用户单元到
+  `/usr/lib/systemd/user/molpe.service`（仓库根目录 `molpe.service`），运行时依赖 `glibc` 与 `mpv`
 - GitHub Release 附带 `molpe-<版本>-<pkgrel>-x86_64.pkg.tar.zst`；本地产物放在忽略提交的 `dist/`
 - AUR 预编译包名为 `molpe-bin`，仅从 GitHub Release 下载产物，安装后的启动命令仍为 `molpe`；
   AUR 仓库克隆为项目根目录下的嵌套仓库 `molpe-bin/`（已 gitignore，独立提交推送）

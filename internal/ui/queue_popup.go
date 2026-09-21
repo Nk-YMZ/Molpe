@@ -4,6 +4,7 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 
+	"molpe/internal/ipc"
 	"molpe/internal/netease"
 	"molpe/internal/queue"
 )
@@ -114,16 +115,17 @@ func (m *Model) openQueuePopup() {
 	p.open = true
 }
 
-// buildQueueRows 从队列快照重建弹窗行，按区域分节：历史记录 / 正在播放 /
-// 下一首播放 / 歌单后续。空区域不显示标题。
+// buildQueueRows 从服务端状态快照重建弹窗行，按区域分节：历史记录 /
+// 正在播放 / 下一首播放 / 歌单后续。空区域不显示标题。
 func (m *Model) buildQueueRows() {
 	p := &m.popup
 	p.rows = p.rows[:0]
 	header := func(title string) {
 		p.rows = append(p.rows, queueRow{kind: rowHeader, title: title})
 	}
-	hist := m.queue.History()
-	hpos := m.queue.HistoryPos()
+	q := m.st.Queue
+	hist := q.History
+	hpos := q.Hpos
 	// 历史记录：按时间正序，越早越靠上。
 	if hpos > 0 {
 		header("历史记录")
@@ -132,14 +134,14 @@ func (m *Model) buildQueueRows() {
 		}
 	}
 	// 正在播放。
-	if cur, ok := m.queue.Current(); ok {
+	if m.st.Playing != nil {
 		header("正在播放")
-		p.rows = append(p.rows, queueRow{kind: rowCurrent, song: cur})
+		p.rows = append(p.rows, queueRow{kind: rowCurrent, song: m.st.Playing.Song})
 	}
 	// 下一首播放：“上一首”回退出的前进位置播放优先级最高，排在该区域最前；
 	// 其后为手动添加的下一首队列，播放顺序越远越靠下。均为空则不显示该区域。
 	future := hist[min(hpos+1, len(hist)):]
-	nextUp := m.queue.NextUp()
+	nextUp := q.NextUp
 	if len(future)+len(nextUp) > 0 {
 		header("下一首播放")
 		for i, s := range future {
@@ -150,8 +152,8 @@ func (m *Model) buildQueueRows() {
 		}
 	}
 	// 歌单后续：仅顺序/列表循环模式展示，从当前曲的下一首到歌单末尾，不考虑循环。
-	if m.queue.Mode() != queue.ModeRandom {
-		if base, up := m.queue.Upcoming(); len(up) > 0 {
+	if q.Mode != queue.ModeRandom && m.st.Playing != nil {
+		if base, up := upcomingSongs(m.st); len(up) > 0 {
 			header("歌单后续")
 			for i, s := range up {
 				p.rows = append(p.rows, queueRow{kind: rowUpcoming, index: base + i, song: s})
@@ -160,28 +162,30 @@ func (m *Model) buildQueueRows() {
 	}
 }
 
-// refreshQueuePopup 在曲目切换后刷新弹窗内容，光标回到当前曲目行。
-func (m *Model) refreshQueuePopup() {
-	p := &m.popup
-	if !p.open {
-		return
+// upcomingSongs 返回歌单中当前曲之后的歌曲及其在歌单中的起始下标；
+// 当前曲不在歌单中或已是歌单末尾时 songs 为空。
+func upcomingSongs(st ipc.State) (base int, songs []netease.Song) {
+	if st.Playing == nil {
+		return 0, nil
 	}
-	if _, ok := m.queue.Current(); !ok {
-		p.open = false
-		return
+	for i, s := range st.Queue.Songs {
+		if s.ID == st.Playing.Song.ID {
+			if i+1 >= len(st.Queue.Songs) {
+				return 0, nil
+			}
+			return i + 1, st.Queue.Songs[i+1:]
+		}
 	}
-	m.buildQueueRows()
-	p.cursor = max(0, p.currentRow())
-	p.ensureVisible()
+	return 0, nil
 }
 
 // updatePopup 处理弹窗打开时的按键。
 func (m Model) updatePopup(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	p := &m.popup
+	if nm, cmd, ok := m.quitKey(msg); ok {
+		return nm, cmd
+	}
 	switch {
-	case key.Matches(msg, m.keys.Quit):
-		m.shutdown()
-		return m, tea.Quit
 	case key.Matches(msg, m.keys.Queue), key.Matches(msg, m.keys.Back):
 		p.open = false
 	case key.Matches(msg, m.keys.Up):
@@ -189,79 +193,32 @@ func (m Model) updatePopup(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Down):
 		p.moveCursor(1)
 	case key.Matches(msg, m.keys.Delete):
-		return m.deletePopupRow()
+		m.deletePopupRow()
 	}
 	return m, nil
 }
 
-// deletePopupRow 删除光标选中的曲目：历史/下一首队列/歌单后续仅从对应
-// 队列移除；删除当前曲目则自动跳转下一首。
-func (m Model) deletePopupRow() (tea.Model, tea.Cmd) {
+// deletePopupRow 删除光标选中的曲目（通知后端执行）：历史/下一首队列/
+// 歌单后续仅从对应队列移除；删除当前曲目则自动跳转下一首。
+// 删除结果由后端推送的状态快照驱动刷新，光标由 applyState 就近校正。
+func (m *Model) deletePopupRow() {
 	p := &m.popup
 	if len(p.rows) == 0 {
-		return m, nil
+		return
 	}
 	row := p.rows[p.cursor]
-	curRow := p.currentRow()
-	d := p.cursor
-
-	if row.kind == rowCurrent {
-		m.cancelGap()
-		m.queue.RemoveCurrent()
-		song, ok := m.queue.Next()
-		m.saveQueue()
-		if !ok {
-			// 没有可播放的下一首：停止播放并关闭弹窗。
-			if pl, err := m.player.get(); err == nil {
-				pl.Close()
-				m.player.set(nil) // 播放器已关闭，下次播放时重建
-			}
-			m.playing = nil
-			m.paused = false
-			// 歌词随播放停止清除，残留滚动定时器由序号作废。
-			m.lyrics = nil
-			m.lyricCur = -1
-			m.lyricTicking = false
-			m.lyricSeq++
-			m.publishState()
-			p.open = false
-			return m, m.setNote("队列已播完")
-		}
-		m.buildQueueRows()
-		// 光标留在原位置，新的当前曲补位到此处。
-		p.cursor = d
-		p.normalizeCursor(1)
-		p.ensureVisible()
-		m.paused = false // 删除当前曲即切歌，暂停状态随之解除
-		return m, m.playCmd(song)
-	}
-
+	var section string
 	switch row.kind {
 	case rowHistory:
-		m.queue.RemoveHistory(row.index)
+		section = ipc.SectionHistory
 	case rowNextUp:
-		m.queue.RemoveNextUp(row.index)
+		section = ipc.SectionNextUp
 	case rowUpcoming:
-		m.queue.RemovePlaylist(row.index)
+		section = ipc.SectionPlaylist
+	case rowCurrent:
+		section = ipc.SectionCurrent
 	default: // 标题行，不可删除
-		return m, nil
+		return
 	}
-	m.saveQueue()
-	m.buildQueueRows()
-	if d < curRow {
-		// 删除的是当前曲上方的条目：上方条目下移补位，
-		// 光标落在补位过来的更早条目上；已是最上方条目时保持原位。
-		p.cursor = max(0, d-1)
-		if p.offset > 0 {
-			p.offset--
-		}
-		p.normalizeCursor(-1)
-	} else {
-		// 删除的是当前曲下方的条目：光标位置不动，下方条目上移补位；
-		// 下方没有别的曲目时才上移光标。
-		p.cursor = d
-		p.normalizeCursor(1)
-	}
-	p.ensureVisible()
-	return m, nil
+	_ = m.srv.Send(ipc.TRemove, ipc.RemoveCmd{Section: section, Index: row.index})
 }

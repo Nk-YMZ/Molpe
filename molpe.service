@@ -1,0 +1,7 @@
+[Unit]
+Description=木末 Molpe 播放守护进程
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/molpe daemon
+Restart=on-failure

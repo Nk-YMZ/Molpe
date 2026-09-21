@@ -6,137 +6,80 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/skip2/go-qrcode"
 
+	"molpe/internal/ipc"
 	"molpe/internal/netease"
 )
-
-// qrPollInterval 是二维码状态的轮询间隔。
-const qrPollInterval = 2 * time.Second
 
 // loginFrameInterval 是登录页状态行块状旋转帧的刷新间隔；
 // 仅在登录页且二维码有效期间运行，离开登录页后彻底停止。
 const loginFrameInterval = 150 * time.Millisecond
 
+// loginModel 是登录页的本地展示状态。二维码会话由后端持有并轮询，
+// 前端只负责把二维码 URL 渲染为字符画与维护状态行动画。
 type loginModel struct {
-	client  *netease.Client
-	qr      *netease.QRLogin
-	art     string // 二维码字符画
-	status  string
-	notice  string // 附加提示，如启动时检查登录态失败
-	expired bool   // 二维码失效或获取失败，停止轮询
-	done    bool   // 登录成功
-	frame   int    // 状态行动画帧序号
+	art         string // 二维码字符画
+	renderedURL string // art 对应的二维码内容
+	status      string
+	notice      string // 附加提示（如登录页相关的操作说明）
+	frame       int    // 状态行动画帧序号
 }
 
-type (
-	qrFetchedMsg struct {
-		qr  *netease.QRLogin
-		art string
-		err error
-	}
-	qrTickMsg    struct{}
-	loginTickMsg struct{} // 状态行帧动画
-	qrCheckedMsg struct {
-		code int
-		err  error
-	}
-	loginStatusMsg struct {
-		account *netease.Account
-		err     error
-	}
-)
-
-func newLoginModel(client *netease.Client) loginModel {
-	return loginModel{client: client, status: "正在获取二维码…"}
+// qrArtMsg 二维码字符画渲染结果；url 用于丢弃过期渲染。
+type qrArtMsg struct {
+	url string
+	art string
+	err error
 }
 
-// checkLoginCmd 查询当前登录账号；refresh 为 true 时先刷新登录态。
-func checkLoginCmd(client *netease.Client, refresh bool) tea.Cmd {
+// loginTickMsg 状态行帧动画消息。
+type loginTickMsg struct{}
+
+// qrChanged 判断二维码会话是否发生变化（出现/消失/内容/状态码变化）。
+func qrChanged(prev, cur *ipc.QRStatus) bool {
+	if prev == nil || cur == nil {
+		return prev != cur
+	}
+	return prev.URL != cur.URL || prev.Code != cur.Code
+}
+
+// updateQR 根据后端推送的二维码会话状态更新登录页文案，
+// 并在二维码内容变化时异步重新渲染字符画。
+func (m *Model) updateQR(qr *ipc.QRStatus) tea.Cmd {
+	if qr == nil {
+		m.login.art = ""
+		m.login.renderedURL = ""
+		m.login.status = "正在获取二维码…"
+		return nil
+	}
+	switch qr.Code {
+	case netease.QRCodeExpired:
+		m.login.status = "二维码已过期，按 r 刷新"
+	case netease.QRCodeScanned:
+		m.login.status = "已扫码，请在手机上确认登录"
+	default:
+		m.login.status = "请使用网易云音乐 App 扫码登录"
+	}
+	if qr.URL == m.login.renderedURL {
+		return nil
+	}
+	m.login.renderedURL = qr.URL
+	m.login.art = ""
+	url := qr.URL
 	return func() tea.Msg {
-		if refresh {
-			_ = client.RefreshLogin() // 刷新失败不影响本地登录态判断
+		code, err := qrcode.New(url, qrcode.Medium)
+		if err != nil {
+			return qrArtMsg{url: url, err: err}
 		}
-		acc, err := client.AccountInfo()
-		return loginStatusMsg{account: acc, err: err}
+		return qrArtMsg{url: url, art: code.ToSmallString(false)}
 	}
 }
 
-// refresh 重新获取二维码（首次进入或手动刷新）。
-func (m loginModel) refresh() (loginModel, tea.Cmd) {
-	m.qr = nil
-	m.art = ""
-	m.status = "正在获取二维码…"
-	m.expired = false
-	m.done = false
-	return m, func() tea.Msg {
-		qr, err := m.client.NewQRLogin()
-		if err != nil {
-			return qrFetchedMsg{err: err}
-		}
-		code, err := qrcode.New(qr.URL, qrcode.Medium)
-		if err != nil {
-			return qrFetchedMsg{err: err}
-		}
-		return qrFetchedMsg{qr: qr, art: code.ToSmallString(false)}
+// scheduleLoginTick 安排登录页状态行帧动画的下一帧；仅登录页且二维码
+// 有效（未过期）时运行，离开登录页或二维码过期后彻底停止。
+func (m *Model) scheduleLoginTick() tea.Cmd {
+	if m.loginTicking || m.page != pageLogin || m.st.QR == nil || m.st.QR.Code == netease.QRCodeExpired {
+		return nil
 	}
-}
-
-// poll 调度下一次二维码状态检查。
-func (m loginModel) poll() tea.Cmd {
-	return tea.Tick(qrPollInterval, func(time.Time) tea.Msg { return qrTickMsg{} })
-}
-
-// frameTick 调度状态行帧动画的下一帧。
-func (m loginModel) frameTick() tea.Cmd {
+	m.loginTicking = true
 	return tea.Tick(loginFrameInterval, func(time.Time) tea.Msg { return loginTickMsg{} })
-}
-
-func (m loginModel) Update(msg tea.Msg) (loginModel, tea.Cmd) {
-	switch msg := msg.(type) {
-	case qrFetchedMsg:
-		m.notice = ""
-		if msg.err != nil {
-			m.status = msg.err.Error() + "，按 r 重试"
-			m.expired = true
-			return m, nil
-		}
-		m.qr = msg.qr
-		m.art = msg.art
-		m.status = "请使用网易云音乐 App 扫码登录"
-		return m, tea.Batch(m.poll(), m.frameTick())
-	case loginTickMsg:
-		if m.qr == nil || m.expired || m.done {
-			return m, nil // 动画随登录页生命周期结束
-		}
-		m.frame++
-		return m, m.frameTick()
-	case qrTickMsg:
-		if m.qr == nil || m.expired {
-			return m, nil
-		}
-		unikey := m.qr.UniKey
-		return m, func() tea.Msg {
-			code, err := m.client.CheckQRLogin(unikey)
-			return qrCheckedMsg{code: code, err: err}
-		}
-	case qrCheckedMsg:
-		switch {
-		case msg.err != nil:
-			// 网络异常时静默重试
-			return m, m.poll()
-		case msg.code == netease.QRCodeSuccess:
-			m.done = true
-			m.status = "登录成功"
-			return m, nil
-		case msg.code == netease.QRCodeExpired:
-			m.status = "二维码已过期，按 r 刷新"
-			m.expired = true
-			return m, nil
-		case msg.code == netease.QRCodeScanned:
-			m.status = "已扫码，请在手机上确认登录"
-			return m, m.poll()
-		default:
-			return m, m.poll()
-		}
-	}
-	return m, nil
 }

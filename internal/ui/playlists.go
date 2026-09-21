@@ -1,8 +1,11 @@
 package ui
 
 import (
+	"errors"
+
 	tea "charm.land/bubbletea/v2"
 
+	"molpe/internal/ipc"
 	"molpe/internal/netease"
 )
 
@@ -34,16 +37,38 @@ type songsFetchedMsg struct {
 	err        error
 }
 
-func fetchPlaylistsCmd(c *netease.Client, uid int64) tea.Cmd {
+// fetchPlaylistsCmd 向后端请求歌单列表。
+func fetchPlaylistsCmd(c *ipc.Client) tea.Cmd {
 	return func() tea.Msg {
-		playlists, err := c.UserPlaylists(uid)
-		return playlistsFetchedMsg{playlists: playlists, err: err}
+		resp, err := c.Request(ipc.TGetPlaylists, nil)
+		if err != nil {
+			return playlistsFetchedMsg{err: err}
+		}
+		var pm ipc.PlaylistsMsg
+		if err := resp.DecodeData(&pm); err != nil {
+			return playlistsFetchedMsg{err: err}
+		}
+		if pm.Err != "" {
+			return playlistsFetchedMsg{err: errors.New(pm.Err)}
+		}
+		return playlistsFetchedMsg{playlists: pm.Playlists}
 	}
 }
 
-func fetchSongsCmd(c *netease.Client, playlistID int64) tea.Cmd {
+// fetchSongsCmd 向后端请求歌单歌曲。
+func fetchSongsCmd(c *ipc.Client, playlistID int64) tea.Cmd {
 	return func() tea.Msg {
-		songs, err := c.PlaylistSongs(playlistID)
-		return songsFetchedMsg{playlistID: playlistID, songs: songs, err: err}
+		resp, err := c.Request(ipc.TGetSongs, ipc.GetSongsCmd{PlaylistID: playlistID})
+		if err != nil {
+			return songsFetchedMsg{playlistID: playlistID, err: err}
+		}
+		var sm ipc.SongsMsg
+		if err := resp.DecodeData(&sm); err != nil {
+			return songsFetchedMsg{playlistID: playlistID, err: err}
+		}
+		if sm.Err != "" {
+			return songsFetchedMsg{playlistID: playlistID, err: errors.New(sm.Err)}
+		}
+		return songsFetchedMsg{playlistID: playlistID, songs: sm.Songs}
 	}
 }

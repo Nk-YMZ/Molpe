@@ -5,63 +5,37 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"molpe/internal/mpris"
-	"molpe/internal/netease"
+	"molpe/internal/ipc"
 )
 
-type songURLFetchedMsg struct {
-	song netease.Song
-	url  *netease.SongURL
-	err  error
-	seq  int // 请求序号，用于丢弃过期响应
+// serverEventMsg 包装一条后端推送的事件消息。
+type serverEventMsg ipc.Message
+
+// serverGoneMsg 表示与后端的连接已断开。
+type serverGoneMsg struct{}
+
+// listenServerCmd 等待一次后端事件或断开通知；每次事件处理后重新挂起。
+func listenServerCmd(c *ipc.Client) tea.Cmd {
+	return func() tea.Msg {
+		select {
+		case msg := <-c.Events():
+			return serverEventMsg(msg)
+		case <-c.Gone():
+			return serverGoneMsg{}
+		}
+	}
 }
 
-type mprisEventMsg mpris.Event
-
-// playerEndedMsg 表示当前曲目自然播完（mpv end-file/eof），应自动连播。
-type playerEndedMsg struct{}
-
-// gapExpiredMsg 歌曲间隔到期消息；seq 与 Model.gapSeq 不一致时说明是
-// 切歌/点歌后残留的过期定时器，直接丢弃。
-type gapExpiredMsg struct{ seq int }
-
-// startGap 进入歌曲间隔：下一首置为待播（暂停）状态，并安排到期自动开播。
-// 间隔期间除该一次性定时器外无其他后台活动；任何播放意图（播放键/切歌/
-// 点歌）都会取消间隔立即开播。
-func (m Model) startGap(song netease.Song) (tea.Model, tea.Cmd) {
-	m.gapSong = &song
-	m.gapSeq++
-	seq := m.gapSeq
-	m.playing = &playingInfo{song: song, level: m.quality}
-	m.paused = true
-	m.progressPos = 0
-	m.pos.set(0)
-	// 旧歌词随上一首结束清除，残留滚动定时器由序号作废。
-	m.lyrics = nil
-	m.lyricCur = -1
-	m.lyricTicking = false
-	m.lyricSeq++
-	m.publishState()
-	m.refreshQueuePopup()
-	gap := time.Duration(m.songGap) * time.Second
-	return m, tea.Batch(
-		tea.Tick(gap, func(time.Time) tea.Msg { return gapExpiredMsg{seq} }),
-		listenEndCmd(m.endCh),
-	)
-}
-
-// cancelGap 取消进行中的歌曲间隔：递增序号使残留定时器到期时被丢弃。
-func (m *Model) cancelGap() {
-	m.gapSong = nil
-	m.gapSeq++
-}
-
-// playGapSong 跳过剩余间隔，立即开播待播的下一首。
-func (m Model) playGapSong() (tea.Model, tea.Cmd) {
-	song := *m.gapSong
-	m.cancelGap()
-	m.paused = false
-	return m, m.playCmd(song)
+// playPos 返回当前播放位置（秒）：以快照中的位置锚点为基准本地外推，
+// 无需向后端或 mpv 周期查询。暂停/无播放时返回锚点值。
+func (m Model) playPos() float64 {
+	if m.st.Playing == nil {
+		return 0
+	}
+	if m.st.Paused {
+		return m.st.Pos
+	}
+	return m.st.Pos + time.Since(m.stAt).Seconds()
 }
 
 // progressInterval 进度条刷新间隔。仅在播放中运行，暂停时完全停止。
@@ -71,13 +45,10 @@ const progressInterval = time.Second
 // 说明是暂停/切歌后残留的过期定时器，直接丢弃。
 type progressTickMsg struct{ seq int }
 
-// scheduleProgressTick 安排进度条刷新：播放中每秒唤醒一次读取播放位置；
-// 暂停、无播放、已在运行时不启动。
+// scheduleProgressTick 安排进度条刷新：播放中每秒唤醒一次重绘（位置在
+// 渲染时按锚点外推计算）；暂停、无播放、已在运行时不启动。
 func (m *Model) scheduleProgressTick() tea.Cmd {
-	if m.progressTicking || m.paused || m.playing == nil {
-		return nil
-	}
-	if _, err := m.player.get(); err != nil {
+	if m.progressTicking || m.st.Paused || m.st.Playing == nil {
 		return nil
 	}
 	m.progressTicking = true
@@ -103,38 +74,4 @@ func (m *Model) scheduleRevealTick() tea.Cmd {
 	m.revealSeq++
 	seq := m.revealSeq
 	return tea.Tick(revealInterval, func(time.Time) tea.Msg { return revealTickMsg{seq} })
-}
-
-// playCmd 拉取歌曲播放地址。每次发起都会递增请求序号，
-// 快速连续切歌时先发出的慢响应会被 handleSongURL 按序号丢弃。
-func (m *Model) playCmd(song netease.Song) tea.Cmd {
-	m.playSeq++
-	seq := m.playSeq
-	return func() tea.Msg {
-		u, err := m.client.SongURL(song.ID, m.quality)
-		return songURLFetchedMsg{song: song, url: u, err: err, seq: seq}
-	}
-}
-
-// listenMprisCmd 等待一次桌面控制事件；服务仅随进程退出回收，
-// 进程退出前该监听 goroutine 由 Bubble Tea 一并结束。
-func listenMprisCmd(svc *mpris.Service) tea.Cmd {
-	if svc == nil {
-		return nil
-	}
-	return func() tea.Msg {
-		ev, ok := <-svc.Events()
-		if !ok {
-			return nil
-		}
-		return mprisEventMsg(ev)
-	}
-}
-
-// listenEndCmd 等待一次 mpv 自然播完事件。
-func listenEndCmd(endCh <-chan struct{}) tea.Cmd {
-	return func() tea.Msg {
-		<-endCh
-		return playerEndedMsg{}
-	}
 }

@@ -3,6 +3,8 @@ package ui
 import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
+
+	"molpe/internal/ipc"
 )
 
 // themePickerMaxRows 主题选择弹窗可见行数上限。
@@ -47,10 +49,10 @@ func (m *Model) openThemePicker() {
 
 // updatePicker 处理主题选择弹窗打开时的按键。
 func (m Model) updatePicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if nm, cmd, ok := m.quitKey(msg); ok {
+		return nm, cmd
+	}
 	switch {
-	case key.Matches(msg, m.keys.Quit):
-		m.shutdown()
-		return m, tea.Quit
 	case key.Matches(msg, m.keys.Theme), key.Matches(msg, m.keys.Back):
 		m.picker.open = false
 	case key.Matches(msg, m.keys.Up):
@@ -72,7 +74,8 @@ func (m Model) updatePicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// applyTheme 加载并应用主题：重建样式并持久化主题名（随配置在退出时统一落盘）。
+// applyTheme 加载并应用主题：重建样式并通知后端持久化主题名
+// （配置文件由后端统一写回，避免前后端双写互相覆盖）。
 // 列表项在快照时按主题符号重建，无需额外刷新。
 func (m *Model) applyTheme(name string) tea.Cmd {
 	t, err := LoadTheme(m.dirs.Config, name)
@@ -82,6 +85,6 @@ func (m *Model) applyTheme(name string) tea.Cmd {
 	m.theme = t
 	m.themeName = name
 	m.sty = newStyles(t)
-	m.cfg.Theme = name
+	_ = m.srv.Send(ipc.TSetTheme, ipc.ThemeCmd{Name: name})
 	return m.setNote("已切换主题：" + name)
 }
