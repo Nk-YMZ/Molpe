@@ -50,9 +50,14 @@ type Service struct {
 
 	positionFn func() (float64, error) // 返回播放位置（秒）
 
+	// D-Bus 调用方 goroutine 触发，须快速返回（仅投递结果，不做实际工作）。
+	seekFn        func(offsetMicros int64)
+	setPositionFn func(trackID string, posMicros int64)
+
 	mu        sync.Mutex
 	status    string
 	volume    float64 // 0.0-1.0
+	canSeek   bool
 	metadata  map[string]dbus.Variant
 	closeOnce sync.Once
 }
@@ -159,6 +164,32 @@ func (s *Service) SetVolume(v float64) {
 	s.emitChanged(ifacePlayer, "Volume")
 }
 
+// SetSeekHandler 注册进度跳转回调（对应 Seek/SetPosition 方法）；
+// 回调在 D-Bus 调用方 goroutine 中触发，仅投递结果，须快速返回。
+func (s *Service) SetSeekHandler(seek func(offsetMicros int64),
+	setPosition func(trackID string, posMicros int64)) {
+	s.mu.Lock()
+	s.seekFn, s.setPositionFn = seek, setPosition
+	s.mu.Unlock()
+}
+
+// SetCanSeek 更新是否接受进度跳转（无可定位音频时为 false，桌面组件据此
+// 禁用进度条拖动），并通知桌面环境。
+func (s *Service) SetCanSeek(can bool) {
+	s.mu.Lock()
+	changed := s.canSeek != can
+	s.canSeek = can
+	s.mu.Unlock()
+	if changed {
+		s.emitChanged(ifacePlayer, "CanSeek")
+	}
+}
+
+// Seeked 在跳转完成后发射 Seeked 信号，桌面组件据此立即刷新滑块位置。
+func (s *Service) Seeked(posMicros int64) {
+	_ = s.conn.Emit(objectPath, ifacePlayer+".Seeked", posMicros)
+}
+
 func (s *Service) emitChanged(iface, name string) {
 	value, err := s.get(iface, name)
 	if err != nil {
@@ -207,7 +238,7 @@ func (s *Service) get(iface, name string) (dbus.Variant, *dbus.Error) {
 		case "CanGoNext", "CanGoPrevious":
 			return dbus.MakeVariant(true), nil
 		case "CanSeek":
-			return dbus.MakeVariant(false), nil
+			return dbus.MakeVariant(s.canSeek), nil
 		}
 	}
 	return dbus.Variant{}, dbus.NewError("org.freedesktop.DBus.Error.UnknownProperty", []any{iface, name})
@@ -290,11 +321,28 @@ func (s *Service) Next() *dbus.Error { s.push(EventNext); return nil }
 // Previous 请求播放上一首。
 func (s *Service) Previous() *dbus.Error { s.push(EventPrevious); return nil }
 
-// SeekOffset 对应 MPRIS 的 Seek 方法，暂不支持，空实现。
-func (s *Service) SeekOffset(offset int64) *dbus.Error { return nil }
+// SeekOffset 对应 MPRIS 的 Seek 方法：相对偏移（微秒，可为负）。
+func (s *Service) SeekOffset(offset int64) *dbus.Error {
+	s.mu.Lock()
+	fn, can := s.seekFn, s.canSeek
+	s.mu.Unlock()
+	if can && fn != nil {
+		fn(offset)
+	}
+	return nil
+}
 
-// SetPosition 暂不支持，空实现。
-func (s *Service) SetPosition(trackID dbus.ObjectPath, position int64) *dbus.Error { return nil }
+// SetPosition 跳转到指定曲目的绝对位置（微秒）；TrackId 与当前曲目
+// 不匹配时按协议忽略。
+func (s *Service) SetPosition(trackID dbus.ObjectPath, position int64) *dbus.Error {
+	s.mu.Lock()
+	fn, can := s.setPositionFn, s.canSeek
+	s.mu.Unlock()
+	if can && fn != nil {
+		fn(string(trackID), position)
+	}
+	return nil
+}
 
 // OpenUri 暂不支持，空实现。
 func (s *Service) OpenUri(uri string) *dbus.Error { return nil }

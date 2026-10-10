@@ -57,6 +57,68 @@ type lyricsResult struct {
 	err    error
 }
 
+// clampDur 将 v 钳制到 [lo, hi]。
+func clampDur(v, lo, hi time.Duration) time.Duration {
+	return min(max(v, lo), hi)
+}
+
+// seekBy 相对跳转播放位置：钳制在曲目时长范围内（越过开头从头播放，
+// 不切换曲目；越过末尾由 mpv 自然播完进入下一首）。加载中/待播重试中
+// 没有可定位的音频流，直接忽略；歌曲间隔中视为对当前曲的主动操作：
+// 累计目标偏移（多次按键叠加），取消间隔立即开播并从该位置开始。
+func (s *Server) seekBy(delta time.Duration) {
+	if s.playing == nil || s.playing.Song.Duration <= 0 {
+		return
+	}
+	if s.gapSong != nil {
+		s.startOffset = clampDur(s.startOffset+delta, 0, s.playing.Song.Duration)
+		s.playGapSong()
+		s.startOffsetSeq = s.playSeq // 仅本次开播消费该定位
+		return
+	}
+	if s.loading || s.retrySong != nil {
+		return
+	}
+	cur, _ := s.anchor.get()
+	s.seekTo(time.Duration(cur*float64(time.Second)) + delta)
+}
+
+// seekTo 跳转到绝对播放位置（钳制在曲目时长范围内）。
+func (s *Server) seekTo(pos time.Duration) {
+	if s.playing == nil || s.playing.Song.Duration <= 0 {
+		return
+	}
+	if s.gapSong != nil {
+		s.startOffset = clampDur(pos, 0, s.playing.Song.Duration)
+		s.playGapSong()
+		s.startOffsetSeq = s.playSeq
+		return
+	}
+	if s.loading || s.retrySong != nil || s.player == nil {
+		return
+	}
+	pos = clampDur(pos, 0, s.playing.Song.Duration)
+	if err := s.player.Seek(pos); err != nil {
+		s.pushNote("跳转失败: "+err.Error(), true)
+		return
+	}
+	// 更新锚点：前端进度条与 MPRIS 位置立即对齐；暂停中跳转保持暂停。
+	s.anchor.set(pos.Seconds(), s.paused)
+	if s.mpris != nil {
+		s.mpris.Seeked(pos.Microseconds())
+	}
+	s.pushState()
+}
+
+// mprisSeekResult 桌面组件的相对跳转请求（Seek 方法，微秒偏移）。
+type mprisSeekResult struct{ offsetMicros int64 }
+
+// mprisSetPositionResult 桌面组件的绝对定位请求（SetPosition 方法）。
+type mprisSetPositionResult struct {
+	trackID   string
+	posMicros int64
+}
+
 // gapExpiredResult 歌曲间隔到期；seq 用于丢弃切歌/点歌后的残留定时器。
 type gapExpiredResult struct {
 	seq int
@@ -123,6 +185,12 @@ func (s *Server) handleSongURL(r songURLResult) {
 		s.handlePlayFailure(r.song, r.err)
 		return
 	}
+	// 开播定位仅属于发起它的那次切歌（序号匹配才生效，用后即焚）。
+	startOffset := time.Duration(0)
+	if s.startOffset > 0 && r.seq == s.startOffsetSeq {
+		startOffset = s.startOffset
+	}
+	s.startOffset, s.startOffsetSeq = 0, 0
 	if s.player == nil {
 		p, err := player.Start()
 		if err != nil {
@@ -149,8 +217,15 @@ func (s *Server) handleSongURL(r songURLResult) {
 		}
 		s.player = p
 	}
-	if err := s.player.Play(r.url.URL); err != nil {
-		s.handlePlayFailure(r.song, err)
+	var playErr error
+	if startOffset > 0 {
+		// 间隔中快进/快退产生的开播定位：加载即从目标位置开始。
+		playErr = s.player.PlayFrom(r.url.URL, startOffset)
+	} else {
+		playErr = s.player.Play(r.url.URL)
+	}
+	if playErr != nil {
+		s.handlePlayFailure(r.song, playErr)
 		return
 	}
 	// 按切歌时定下的播放意图同步暂停状态（加载中用户可能按了暂停；
@@ -164,7 +239,7 @@ func (s *Server) handleSongURL(r songURLResult) {
 	s.lyricsAttempt = 0 // 新曲目：歌词重试计数归零
 	// 切歌时已就位：回填实际音质，并以加载时刻重置位置锚点。
 	s.playing.Level = r.url.Level
-	s.anchor.set(0, s.paused)
+	s.anchor.set(startOffset.Seconds(), s.paused)
 	s.publishState()
 	s.pushState()
 	s.fetchLyrics(r.song.ID)
@@ -489,10 +564,13 @@ func (s *Server) handlePlayerExited() {
 }
 
 // publishState 向 MPRIS 推送当前曲目元数据与播放状态。
+// CanSeek 随状态联动：只有存在已加载音频流（播放中或暂停）时才接受跳转。
 func (s *Server) publishState() {
 	if s.mpris == nil {
 		return
 	}
+	s.mpris.SetCanSeek(s.playing != nil && !s.loading &&
+		s.retrySong == nil && s.gapSong == nil && s.player != nil)
 	if s.playing != nil {
 		song := s.playing.Song
 		s.mpris.SetTrack(mpris.Track{

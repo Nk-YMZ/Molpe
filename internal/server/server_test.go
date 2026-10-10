@@ -257,6 +257,79 @@ func TestLyricsRetryScheduling(t *testing.T) {
 	}
 }
 
+// TestSeekGuards 无播放/加载中/待播重试中跳转被忽略；钳制不越界。
+func TestSeekGuards(t *testing.T) {
+	if clampDur(-5*time.Second, 0, 100*time.Second) != 0 {
+		t.Fatal("负位置应钳制到 0（从头播放，不切上一首）")
+	}
+	if clampDur(200*time.Second, 0, 100*time.Second) != 100*time.Second {
+		t.Fatal("超过时长应钳制到时长")
+	}
+
+	s := &Server{queue: queue.New(nil, queue.ModeLoop, queue.Options{})}
+	s.seekBy(5 * time.Second) // 无播放：不 panic
+	if s.startOffset != 0 {
+		t.Fatal("无播放时不应产生开播定位")
+	}
+
+	song := netease.Song{ID: 1, Name: "歌", Duration: 100 * time.Second}
+	s.playing = &ipc.Playing{Song: song}
+	s.loading = true
+	s.seekBy(5 * time.Second) // 加载中忽略
+	if s.startOffset != 0 {
+		t.Fatal("加载中不应响应跳转")
+	}
+	s.loading = false
+	s.retrySong = &song
+	s.seekBy(5 * time.Second) // 待播重试中忽略
+	if s.startOffset != 0 {
+		t.Fatal("待播重试中不应响应跳转")
+	}
+}
+
+// TestSeekDuringGap 歌曲间隔中快进/快退：累计目标偏移（钳制在时长内），
+// 取消间隔立即开播，定位仅属于本次开播。
+func TestSeekDuringGap(t *testing.T) {
+	client, err := netease.NewClient(filepath.Join(t.TempDir(), "cookies"))
+	if err != nil {
+		t.Fatalf("创建客户端失败: %v", err)
+	}
+	song := netease.Song{ID: 1, Name: "歌", Duration: 100 * time.Second}
+	s := &Server{
+		client:   client,
+		queue:    queue.New(nil, queue.ModeLoop, queue.Options{}),
+		quality:  "lossless",
+		results:  make(chan any, 8),
+		gapSong:  &song,
+		playing:  &ipc.Playing{Song: song},
+		gapTimer: time.NewTimer(time.Hour),
+	}
+	defer s.gapTimer.Stop()
+
+	s.seekBy(30 * time.Second)
+	if s.gapSong != nil {
+		t.Fatal("间隔中跳转应取消间隔立即开播")
+	}
+	if s.startOffset != 30*time.Second || s.startOffsetSeq != s.playSeq {
+		t.Fatalf("开播定位应记录并绑定本次播放: offset=%v seq=%d/%d",
+			s.startOffset, s.startOffsetSeq, s.playSeq)
+	}
+
+	// 快退越过开头：钳制到 0。
+	s.gapSong = &song
+	s.loading = false
+	s.seekBy(-10 * time.Second) // startOffset 30s-10s=20s
+	if s.startOffset != 20*time.Second {
+		t.Fatalf("多次按键偏移应累计: %v", s.startOffset)
+	}
+	s.gapSong = &song
+	s.loading = false
+	s.seekBy(-time.Hour)
+	if s.startOffset != 0 {
+		t.Fatal("快退越过开头应钳制到 0")
+	}
+}
+
 func TestServerLifecycle(t *testing.T) {
 	_, done := setupServer(t)
 	dirs := config.DefaultDirs()

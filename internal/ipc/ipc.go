@@ -42,6 +42,7 @@ const (
 	TPrev         Type = "prev"          // 上一首
 	TCycleMode    Type = "cycle_mode"    // 循环切换播放模式
 	TVolumeDelta  Type = "volume_delta"  // 调整音量（VolumeCmd）
+	TSeek         Type = "seek"          // 相对跳转播放位置（SeekCmd）
 	TRemove       Type = "remove"        // 从队列删除条目（RemoveCmd）
 	TRefresh      Type = "refresh"       // 全局刷新：后端重新对齐所有状态（无载荷）
 	TSetTheme     Type = "set_theme"     // 同步主题选择（ThemeCmd）
@@ -124,6 +125,12 @@ type PlayNextCmd struct {
 // VolumeCmd 按步进调整音量。
 type VolumeCmd struct {
 	Delta int `json:"delta"`
+}
+
+// SeekCmd 相对跳转播放位置；OffsetMs 为正负毫秒偏移，
+// 后端钳制在曲目时长范围内（越过开头从头播放，不切换曲目）。
+type SeekCmd struct {
+	OffsetMs int64 `json:"offset_ms"`
 }
 
 // Remove 的删除区域。

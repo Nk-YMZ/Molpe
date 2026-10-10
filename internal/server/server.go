@@ -61,6 +61,9 @@ type Server struct {
 	gapAt    time.Time     // 间隔开始时刻（计算剩余时间）
 	gapTimer *time.Timer   // 间隔一次性定时器，切歌/点歌时停止
 
+	startOffset    time.Duration // 间隔中快进/快退累计的开播定位
+	startOffsetSeq int           // startOffset 所属的播放请求序号（匹配才消费）
+
 	retrySong    *netease.Song // 播放失败待重试的曲目，nil 表示无
 	retrySeq     int           // 重试定时器序号，用于丢弃切歌/点歌后的残留
 	retryAttempt int           // 已连续重试次数（决定退避间隔与提示时机）
@@ -126,6 +129,18 @@ func New(dirs config.Dirs) (*Server, error) {
 	s.mpris, s.mprisErr = mpris.New(s.anchor.get)
 	if s.mpris != nil {
 		s.mpris.SetVolume(float64(s.volume) / 100)
+		// 桌面进度控制：仅投递到事件循环，不在 D-Bus 调用方中工作。
+		s.mpris.SetSeekHandler(func(offsetMicros int64) {
+			select {
+			case s.results <- mprisSeekResult{offsetMicros: offsetMicros}:
+			default:
+			}
+		}, func(trackID string, posMicros int64) {
+			select {
+			case s.results <- mprisSetPositionResult{trackID: trackID, posMicros: posMicros}:
+			default:
+			}
+		})
 		s.publishState()
 	}
 	return s, nil

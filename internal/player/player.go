@@ -83,6 +83,24 @@ func (p *Player) Play(url string) error {
 	return err
 }
 
+// PlayFrom 加载音频地址并从 start 位置开始播放（开播即定位，
+// 避免开播后再 seek 的二次跳转）。start <= 0 时等价于 Play。
+func (p *Player) PlayFrom(url string, start time.Duration) error {
+	if start <= 0 {
+		return p.Play(url)
+	}
+	_, err := p.command("loadfile", url, "replace", 0,
+		map[string]string{"start": fmt.Sprintf("%.3f", start.Seconds())})
+	return err
+}
+
+// Seek 跳转到绝对播放位置（暂停状态下同样生效，且保持暂停）。
+// mpv 会对 HTTP 流发起 Range 请求重新缓冲，跳转后有短暂无声属正常。
+func (p *Player) Seek(pos time.Duration) error {
+	_, err := p.command("set_property", "time-pos", pos.Seconds())
+	return err
+}
+
 // SetPause 设置暂停状态。
 func (p *Player) SetPause(paused bool) error {
 	_, err := p.command("set_property", "pause", paused)

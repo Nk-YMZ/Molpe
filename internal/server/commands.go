@@ -2,6 +2,8 @@ package server
 
 import (
 	"errors"
+	"fmt"
+	"time"
 
 	"molpe/internal/ipc"
 	"molpe/internal/netease"
@@ -66,6 +68,11 @@ func (s *Server) handleMessage(msg ipc.Message) {
 		var c ipc.VolumeCmd
 		if msg.DecodeData(&c) == nil {
 			s.adjustVolume(c.Delta)
+		}
+	case ipc.TSeek:
+		var c ipc.SeekCmd
+		if msg.DecodeData(&c) == nil {
+			s.seekBy(time.Duration(c.OffsetMs) * time.Millisecond)
 		}
 	case ipc.TRemove:
 		var c ipc.RemoveCmd
@@ -220,6 +227,14 @@ func (s *Server) handleResult(res any) {
 		s.handleRetry(r)
 	case playerErrorResult:
 		s.handlePlayerError()
+	case mprisSeekResult:
+		s.seekBy(time.Duration(r.offsetMicros) * time.Microsecond)
+	case mprisSetPositionResult:
+		// 协议要求 TrackId 与当前曲目匹配，不匹配忽略。
+		if s.playing != nil && r.trackID ==
+			fmt.Sprintf("/org/mpris/MediaPlayer2/track/%d", s.playing.Song.ID) {
+			s.seekTo(time.Duration(r.posMicros) * time.Microsecond)
+		}
 	case loginResult:
 		s.handleLogin(r)
 	case qrNewResult:
