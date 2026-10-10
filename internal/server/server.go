@@ -45,10 +45,11 @@ type Server struct {
 	lyricTr  bool   // 歌词是否含翻译
 	autoPlay bool
 
-	queue    *queue.Queue
-	player   *player.Player // nil 表示尚未启动或已关闭
-	mpris    *mpris.Service // nil 表示桌面集成不可用
-	mprisErr error
+	queue        *queue.Queue
+	player       *player.Player  // nil 表示尚未启动或已关闭
+	playerExited <-chan struct{} // 当前 mpv 进程退出通知；主动关闭时置 nil
+	mpris        *mpris.Service  // nil 表示桌面集成不可用
+	mprisErr     error
 
 	playing *ipc.Playing // 当前曲目与实际音质，nil 表示无
 	paused  bool         // 用户期望的播放状态（true 为暂停/待播）
@@ -229,6 +230,8 @@ func (s *Server) loop(sigCh chan os.Signal) error {
 			s.handleResult(res)
 		case <-s.endCh:
 			s.handleEnded()
+		case <-s.playerExited:
+			s.handlePlayerExited()
 		case ev := <-mprisEvents:
 			s.handleMprisEvent(ev)
 		}

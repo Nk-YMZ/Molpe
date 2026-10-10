@@ -102,9 +102,17 @@ func (p *Player) Stop() error {
 	return err
 }
 
-// SetEndCallback 注册曲目自然播完（end-file 且原因为 eof）时的回调，
-// 用于队列自动连播。回调在独立 goroutine 中触发；重复调用仅首次生效。
-func (p *Player) SetEndCallback(cb func()) {
+// Exited 返回进程退出通知通道（mpv 进程退出时关闭）。
+// 用于服务端感知播放器异常退出；主动 Close 后同样会关闭。
+func (p *Player) Exited() <-chan struct{} {
+	return p.exited
+}
+
+// SetEndCallback 注册曲目结束（end-file）事件的回调，reason 为 mpv 的
+// 结束原因：eof 为自然播完（用于队列连播），error 为流播放中途失败
+// （网络中断、CDN 不可达等，用于接入失败重试）；主动操作产生的
+// stop/redirect 等事件不上报。回调在独立 goroutine 中触发；重复调用仅首次生效。
+func (p *Player) SetEndCallback(cb func(reason string)) {
 	p.mu.Lock()
 	if p.closed || p.endWatched {
 		p.mu.Unlock()
@@ -117,7 +125,7 @@ func (p *Player) SetEndCallback(cb func()) {
 
 // watchEnd 持有独立的 IPC 长连接监听 end-file 事件；
 // socket 关闭或 mpv 退出时 goroutine 自动结束。
-func (p *Player) watchEnd(cb func()) {
+func (p *Player) watchEnd(cb func(reason string)) {
 	conn, err := net.Dial("unix", p.socket)
 	if err != nil {
 		return
@@ -137,9 +145,13 @@ func (p *Player) watchEnd(cb func()) {
 		if err := dec.Decode(&ev); err != nil {
 			return
 		}
-		// 仅响应自然播完；手动切歌产生的 stop/redirect 等事件不触发连播。
-		if ev.Event == "end-file" && ev.Reason == "eof" && cb != nil {
-			cb()
+		// 仅上报自然播完与流播放失败；手动切歌/停止产生的
+		// stop/redirect 等事件不触发连播或重试。
+		if ev.Event == "end-file" && cb != nil {
+			switch ev.Reason {
+			case "eof", "error":
+				cb(ev.Reason)
+			}
 		}
 	}
 }

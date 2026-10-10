@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -66,6 +67,9 @@ type retryResult struct {
 	seq int
 }
 
+// playerErrorResult mpv 报告流播放中途失败（end-file reason=error）。
+type playerErrorResult struct{}
+
 // retryBackoff 播放失败后的自动重试间隔；用尽后固定为最后一个值，
 // 持续重试直到成功或用户切歌。重试本身即网络探测：恢复后最多一个
 // 间隔内自动开播。
@@ -91,6 +95,7 @@ func (s *Server) playSong(song netease.Song) {
 		if err := s.player.Stop(); err != nil {
 			s.player.Close()
 			s.player = nil
+			s.playerExited = nil
 		}
 	}
 	s.publishState()
@@ -118,12 +123,21 @@ func (s *Server) handleSongURL(r songURLResult) {
 			s.handlePlayFailure(r.song, err)
 			return
 		}
-		p.SetEndCallback(func() {
+		p.SetEndCallback(func(reason string) {
+			if reason == "error" {
+				// 流播放中途失败（网络中断、CDN 不可达等）。
+				select {
+				case s.results <- playerErrorResult{}:
+				default:
+				}
+				return
+			}
 			select {
 			case s.endCh <- struct{}{}:
 			default:
 			}
 		})
+		s.playerExited = p.Exited()
 		if err := p.SetVolume(s.volume); err != nil {
 			s.pushNote(err.Error(), true)
 		}
@@ -332,6 +346,7 @@ func (s *Server) handlePlayFailure(song netease.Song, err error) {
 			// 播放器已不可用：关闭，重试时重建。
 			s.player.Close()
 			s.player = nil
+			s.playerExited = nil
 		}
 	}
 	first := s.retryAttempt == 0 && s.retrySong == nil
@@ -395,6 +410,36 @@ func (s *Server) retryNow() {
 	}
 	s.paused = false
 	s.playSong(song)
+}
+
+// handlePlayerError 流播放中途失败（end-file reason=error，如网络中断、
+// CDN 不可达）：收敛为待播重试，网络恢复后自动重新拉取地址开播。
+// 切歌/加载中的旧流事件、已在重试管道中、或用户暂停期间的事件不处理。
+func (s *Server) handlePlayerError() {
+	if s.playing == nil || s.loading || s.retrySong != nil || s.paused {
+		return
+	}
+	s.handlePlayFailure(s.playing.Song, errors.New("播放中断（连接失败）"))
+}
+
+// handlePlayerExited mpv 进程异常退出：清理并按当前状态接入恢复路径——
+// 播放中异常退出接入待播重试管道（自动重建播放器恢复播放）；
+// 加载中或已在重试时无需处理（开播/重试时自会重建）；
+// 已暂停时仅提示，下次播放时重建。
+func (s *Server) handlePlayerExited() {
+	s.playerExited = nil
+	if s.player != nil {
+		s.player.Close() // 进程已退出，仅做状态与 socket 清理
+		s.player = nil
+	}
+	switch {
+	case s.retrySong != nil, s.loading:
+		// 重试/开播路径会重建播放器。
+	case s.playing != nil && !s.paused:
+		s.handlePlayFailure(s.playing.Song, errors.New("播放器异常退出"))
+	case s.playing != nil:
+		s.pushNote("播放器异常退出，按播放键重新开始", true)
+	}
 }
 
 // publishState 向 MPRIS 推送当前曲目元数据与播放状态。

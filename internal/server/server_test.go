@@ -122,6 +122,66 @@ func TestToggleDuringLoading(t *testing.T) {
 	}
 }
 
+// TestPlayerErrorConvergence mpv 流播放中途失败（end-file reason=error）：
+// 收敛为待播重试状态；加载中、已暂停、已在重试时的事件不处理。
+func TestPlayerErrorConvergence(t *testing.T) {
+	newServer := func() *Server {
+		return &Server{
+			queue:   queue.New(nil, queue.ModeLoop, queue.Options{}),
+			quality: "lossless",
+			results: make(chan any, 1),
+			playing: &ipc.Playing{Song: netease.Song{ID: 1, Name: "歌"}},
+		}
+	}
+
+	// 播放中流失败 → 收敛为待播重试。
+	s := newServer()
+	s.handlePlayerError()
+	if s.retrySong == nil || !s.paused || !s.state().NetRetry {
+		t.Fatalf("流失败应收敛为待播重试: retry=%v paused=%v", s.retrySong, s.paused)
+	}
+	s.cancelRetry()
+
+	// 加载中（旧流事件）不处理。
+	s = newServer()
+	s.loading = true
+	s.handlePlayerError()
+	if s.retrySong != nil {
+		t.Fatal("加载中的旧流事件不应触发重试")
+	}
+
+	// 用户暂停期间不处理（恢复播放时再按结果收敛）。
+	s = newServer()
+	s.paused = true
+	s.handlePlayerError()
+	if s.retrySong != nil {
+		t.Fatal("暂停期间的流事件不应触发重试")
+	}
+
+	// 已在重试管道中不重复收敛。
+	s = newServer()
+	s.retrySong = &netease.Song{ID: 1}
+	s.handlePlayerError()
+	if s.retryAttempt != 0 {
+		t.Fatal("重试中的流事件不应重复收敛")
+	}
+}
+
+// TestPlayerExitedRecovery mpv 进程异常退出：播放中接入待播重试管道，
+// 已暂停时仅清理（下次播放重建）。
+func TestPlayerExitedRecovery(t *testing.T) {
+	s := &Server{
+		queue:   queue.New(nil, queue.ModeLoop, queue.Options{}),
+		quality: "lossless",
+		results: make(chan any, 1),
+		playing: &ipc.Playing{Song: netease.Song{ID: 1, Name: "歌"}},
+	}
+	s.handlePlayerExited()
+	if s.retrySong == nil || !s.paused || !s.state().NetRetry {
+		t.Fatal("播放中进程退出应接入待播重试")
+	}
+}
+
 func TestServerLifecycle(t *testing.T) {
 	_, done := setupServer(t)
 	dirs := config.DefaultDirs()

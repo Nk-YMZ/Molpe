@@ -173,6 +173,7 @@ func (s *Server) removeCurrent() {
 		if s.player != nil {
 			s.player.Close()
 			s.player = nil
+			s.playerExited = nil
 		}
 		s.playing = nil
 		s.paused = false
@@ -199,6 +200,8 @@ func (s *Server) handleResult(res any) {
 		s.gapExpired(r.seq)
 	case retryResult:
 		s.handleRetry(r)
+	case playerErrorResult:
+		s.handlePlayerError()
 	case loginResult:
 		s.handleLogin(r)
 	case qrNewResult:
