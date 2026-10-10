@@ -73,11 +73,21 @@ var retryBackoff = []time.Duration{
 	2 * time.Second, 5 * time.Second, 10 * time.Second, 20 * time.Second, 30 * time.Second,
 }
 
-// playSong 拉取歌曲播放地址（异步）。每次发起都递增请求序号，
-// 快速连续切歌时先发出的慢响应会被 handleSongURL 按序号丢弃。
+// playSong 切换到指定歌曲并拉取播放地址（异步）。先把当前曲状态切换
+// 到位并推送——操作立即在界面/MPRIS 生效，保证跟手；成功仅回填实际
+// 音质，失败由 handlePlayFailure 收敛为待播重试。每次发起都递增请求
+// 序号，快速连续切歌时先发出的慢响应会被 handleSongURL 按序号丢弃。
 func (s *Server) playSong(song netease.Song) {
 	s.playSeq++
 	seq := s.playSeq
+	// 乐观切换：立即生效。旧曲在地址就绪前继续出声；拉取失败时
+	// handlePlayFailure 会停止旧曲并收敛为待播重试状态。
+	s.playing = &ipc.Playing{Song: song, Level: s.quality}
+	s.anchor.set(0, s.paused)
+	s.lyrics = nil
+	s.lyricsSongID = 0
+	s.publishState()
+	s.pushState()
 	quality := s.quality
 	go func() {
 		u, err := s.client.SongURL(song.ID, quality)
@@ -123,11 +133,9 @@ func (s *Server) handleSongURL(r songURLResult) {
 	// 开播成功：清除可能存在的失败重试状态；此前处于重试流程时提示恢复。
 	recovered := s.retryAttempt > 0
 	s.cancelRetry()
-	s.playing = &ipc.Playing{Song: r.song, Level: r.url.Level}
+	// 乐观切换时已切到目标曲：回填实际音质，并以加载时刻重置位置锚点。
+	s.playing.Level = r.url.Level
 	s.anchor.set(0, s.paused)
-	// 切歌后重置歌词缓存并异步拉取新歌词。
-	s.lyrics = nil
-	s.lyricsSongID = 0
 	s.publishState()
 	s.pushState()
 	s.fetchLyrics(r.song.ID)
