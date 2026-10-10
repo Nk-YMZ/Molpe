@@ -14,6 +14,35 @@ type serverEventMsg ipc.Message
 // serverGoneMsg 表示与后端的连接已断开。
 type serverGoneMsg struct{}
 
+// reconnectTimeout 连接中断后的重连等待上限（覆盖后端自动重启的耗时）。
+const reconnectTimeout = 15 * time.Second
+
+// reconnectedMsg 重连成功，携带新连接与最新快照。
+type reconnectedMsg struct {
+	client *ipc.Client
+	st     ipc.State
+}
+
+// reconnectFailedMsg 重连超时。
+type reconnectFailedMsg struct{}
+
+// reconnectCmd 循环尝试重连后端直到超时（后端自动重启通常在 1 秒内完成）。
+func (m Model) reconnectCmd() tea.Cmd {
+	return func() tea.Msg {
+		deadline := time.Now().Add(reconnectTimeout)
+		for {
+			c, st, err := ipc.Dial(ipc.SocketPath(m.dirs.Cache))
+			if err == nil {
+				return reconnectedMsg{client: c, st: st}
+			}
+			if time.Now().After(deadline) {
+				return reconnectFailedMsg{}
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+	}
+}
+
 // listenServerCmd 等待一次后端事件或断开通知；每次事件处理后重新挂起。
 func listenServerCmd(c *ipc.Client) tea.Cmd {
 	return func() tea.Msg {

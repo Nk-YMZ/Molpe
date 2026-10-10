@@ -24,7 +24,7 @@ func (c *Client) Lyrics(id int64, includeTranslation bool) ([]LyricLine, error) 
 	svc := &service.LyricService{ID: strconv.FormatInt(id, 10)}
 	code, body := svc.Lyric()
 	if code != 200 {
-		return nil, fmt.Errorf("获取歌曲 %d 歌词失败: code=%v", id, code)
+		return nil, requestError(fmt.Sprintf("获取歌曲 %d 歌词", id), code, body)
 	}
 	var resp struct {
 		LRC struct {

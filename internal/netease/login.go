@@ -132,8 +132,11 @@ type Account struct {
 func (c *Client) AccountInfo() (*Account, error) {
 	s := &service.UserAccountService{}
 	code, body := s.AccountInfo()
+	if code != 200 {
+		return nil, requestError("查询账号信息", code, body)
+	}
 	if len(body) == 0 {
-		return nil, fmt.Errorf("查询账号信息失败: code=%v", code)
+		return nil, fmt.Errorf("查询账号信息失败: 空响应")
 	}
 	var resp struct {
 		Account *struct {

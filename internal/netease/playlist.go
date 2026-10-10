@@ -25,8 +25,11 @@ func (c *Client) UserPlaylists(uid int64) ([]Playlist, error) {
 		Limit: "1000",
 	}
 	code, body := s.UserPlaylist()
-	if code != 200 || len(body) == 0 {
-		return nil, fmt.Errorf("获取歌单列表失败: code=%v", code)
+	if code != 200 {
+		return nil, requestError("获取歌单列表", code, body)
+	}
+	if len(body) == 0 {
+		return nil, fmt.Errorf("获取歌单列表失败: 空响应")
 	}
 	var resp struct {
 		Playlist []struct {
@@ -68,8 +71,11 @@ type Song struct {
 func (c *Client) PlaylistSongs(id int64) ([]Song, error) {
 	s := &service.PlaylistTrackAllService{Id: strconv.FormatInt(id, 10)}
 	code, body := s.AllTracks()
-	if code != 200 || len(body) == 0 {
-		return nil, fmt.Errorf("获取歌单歌曲失败: code=%v", code)
+	if code != 200 {
+		return nil, requestError("获取歌单歌曲", code, body)
+	}
+	if len(body) == 0 {
+		return nil, fmt.Errorf("获取歌单歌曲失败: 空响应")
 	}
 	var resp struct {
 		Playlist struct {

@@ -3,6 +3,7 @@
 package netease
 
 import (
+	"bytes"
 	"fmt"
 	"net/http"
 	"os"
@@ -42,4 +43,21 @@ func NewClient(cookieFile string) (*Client, error) {
 	}
 	util.SetGlobalCookieJar(jar)
 	return &Client{jar: jar}, nil
+}
+
+// requestError 构造接口请求错误。code==520 是 netease-music 库对传输层
+// 失败（DNS/连接/超时等）自造的哨兵码，真实原因在响应体中；
+// 其余非 200 为服务端业务响应。诊断弱网/风控问题依赖 body 中的细节。
+func requestError(op string, code float64, body []byte) error {
+	detail := string(bytes.TrimSpace(body))
+	if len(detail) > 200 {
+		detail = detail[:200] + "…"
+	}
+	if code == 520 {
+		return fmt.Errorf("%s（网络传输错误）: %s", op, detail)
+	}
+	if detail == "" {
+		return fmt.Errorf("%s: code=%v", op, code)
+	}
+	return fmt.Errorf("%s: code=%v body=%s", op, code, detail)
 }

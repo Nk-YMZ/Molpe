@@ -123,7 +123,8 @@ type Model struct {
 	noteIsErr bool   // note 是否为错误提示（按错误样式展示）
 	noteID    int    // 提示序号，防止过期定时器误清更新的提示
 
-	serverGone bool // 与后端的连接已断开
+	serverGone   bool // 与后端的连接已断开且重连失败
+	reconnecting bool // 连接中断，正在尝试重连（后端可能在自动重启）
 
 	width  int
 	height int
@@ -210,6 +211,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case serverEventMsg:
 		return m.handleServerEvent(ipc.Message(msg))
 	case serverGoneMsg:
+		// 连接中断（后端可能在自动重启）：尝试重连，超时后退出。
+		m.reconnecting = true
+		m.errNote = "与播放服务的连接中断，正在重连…"
+		return m, m.reconnectCmd()
+	case reconnectedMsg:
+		m.reconnecting = false
+		m.errNote = ""
+		m.srv = msg.client
+		cmd := m.applyState(msg.st)
+		return m, tea.Batch(cmd, listenServerCmd(m.srv), m.globalRefresh())
+	case reconnectFailedMsg:
+		m.reconnecting = false
 		m.serverGone = true
 		return m, tea.Quit
 	case playlistsFetchedMsg:

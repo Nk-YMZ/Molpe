@@ -1,7 +1,6 @@
 package netease
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -53,16 +52,7 @@ func (c *Client) SongURL(id int64, quality string) (*SongURL, error) {
 	code, body, _ := util.CreateRequest("POST",
 		"https://interface3.music.163.com/eapi/song/enhance/player/url/v1", data, options)
 	if code != 200 {
-		// code==520 是 netease-music 库对传输层失败（DNS/连接/超时等）
-		// 自造的哨兵码，真实原因在响应体中；其余非 200 为服务端业务响应。
-		detail := string(bytes.TrimSpace(body))
-		if len(detail) > 200 {
-			detail = detail[:200] + "…"
-		}
-		if code == 520 {
-			return nil, fmt.Errorf("获取歌曲 %d 播放地址失败（网络传输错误）: %s", id, detail)
-		}
-		return nil, fmt.Errorf("获取歌曲 %d 播放地址失败: code=%v body=%s", id, code, detail)
+		return nil, requestError(fmt.Sprintf("获取歌曲 %d 播放地址", id), code, body)
 	}
 	var resp struct {
 		Code int `json:"code"`
