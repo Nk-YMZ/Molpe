@@ -76,8 +76,10 @@ type Server struct {
 
 	playSeq int // 播放地址请求序号，用于丢弃过期响应
 
-	lyricsSongID int64
-	lyrics       []netease.LyricLine // 当前曲目歌词缓存，供重连的前端直接下发
+	lyricsSongID  int64
+	lyrics        []netease.LyricLine // 当前曲目歌词缓存，供重连的前端直接下发
+	lyricsAttempt int                 // 歌词拉取连续失败次数（重试上限控制）
+	lyricsTimer   *time.Timer         // 歌词重试一次性定时器，切歌/退出时停止
 
 	ln       net.Listener
 	conn     net.Conn      // 当前唯一前端连接，nil 表示无（后台模式）
@@ -249,6 +251,9 @@ func (s *Server) shutdown() {
 		}
 		if s.retryTimer != nil {
 			s.retryTimer.Stop()
+		}
+		if s.lyricsTimer != nil {
+			s.lyricsTimer.Stop()
 		}
 		s.stopQRPoll()
 		if s.player != nil {

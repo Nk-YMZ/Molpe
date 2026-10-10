@@ -90,6 +90,12 @@ func (s *Server) playSong(song netease.Song) {
 	s.anchor.set(0, true) // 加载期间位置冻结
 	s.lyrics = nil
 	s.lyricsSongID = 0
+	// 切歌终止旧曲目的歌词重试。
+	s.lyricsAttempt = 0
+	if s.lyricsTimer != nil {
+		s.lyricsTimer.Stop()
+		s.lyricsTimer = nil
+	}
 	if s.player != nil {
 		// 旧曲立即静音；播放器已不可用时关闭，开播时重建。
 		if err := s.player.Stop(); err != nil {
@@ -155,6 +161,7 @@ func (s *Server) handleSongURL(r songURLResult) {
 	// 开播成功：清除可能存在的失败重试状态；此前处于重试流程时提示恢复。
 	recovered := s.retryAttempt > 0
 	s.cancelRetry()
+	s.lyricsAttempt = 0 // 新曲目：歌词重试计数归零
 	// 切歌时已就位：回填实际音质，并以加载时刻重置位置锚点。
 	s.playing.Level = r.url.Level
 	s.anchor.set(0, s.paused)
@@ -176,17 +183,56 @@ func (s *Server) fetchLyrics(songID int64) {
 }
 
 // handleLyrics 处理歌词获取结果；切歌后的过期响应直接丢弃。
+// 失败时自动重试（固定间隔、次数上限），成功或切歌后终止。
 func (s *Server) handleLyrics(r lyricsResult) {
 	if s.playing == nil || r.songID != s.playing.Song.ID {
 		return
 	}
 	if r.err != nil {
-		s.pushNote("获取歌词失败："+r.err.Error(), false)
+		if s.lyricsAttempt == 0 {
+			s.pushNote("获取歌词失败："+r.err.Error(), false)
+		}
+		s.scheduleLyricsRetry(r.songID)
 		return
 	}
+	s.lyricsAttempt = 0
 	s.lyrics = r.lines
 	s.lyricsSongID = r.songID
 	s.push(ipc.NewMessage(0, ipc.TLyrics, ipc.LyricsMsg{SongID: r.songID, Lines: r.lines}))
+}
+
+// lyricsRetryInterval 歌词重试间隔；lyricsMaxRetries 为重试次数上限
+// （超过后等待用户全局刷新或切歌）。
+const (
+	lyricsRetryInterval = 5 * time.Second
+	lyricsMaxRetries    = 3
+)
+
+// lyricsRetryResult 歌词重试定时器到期；songID 用于丢弃切歌后的残留。
+type lyricsRetryResult struct{ songID int64 }
+
+// scheduleLyricsRetry 安排一次歌词自动重试。
+func (s *Server) scheduleLyricsRetry(songID int64) {
+	if s.lyricsAttempt >= lyricsMaxRetries {
+		return
+	}
+	s.lyricsAttempt++
+	if s.lyricsTimer != nil {
+		s.lyricsTimer.Stop()
+	}
+	s.lyricsTimer = time.AfterFunc(lyricsRetryInterval, func() {
+		s.results <- lyricsRetryResult{songID: songID}
+	})
+}
+
+// handleLyricsRetry 歌词重试定时器到期：仍缺歌词且未切歌、未处于
+// 加载/待播重试中时重新拉取。
+func (s *Server) handleLyricsRetry(r lyricsRetryResult) {
+	if s.playing == nil || s.loading || s.retrySong != nil ||
+		r.songID != s.playing.Song.ID || s.lyricsSongID == r.songID {
+		return
+	}
+	s.fetchLyrics(r.songID)
 }
 
 // toggle 切换播放/暂停；恢复待播状态下播放器尚未启动时，先拉取地址开始播放。

@@ -225,6 +225,38 @@ func TestRefresh(t *testing.T) {
 	}
 }
 
+// TestLyricsRetryScheduling 歌词拉取失败：安排自动重试且不超过上限；
+// 切歌后（songID 不匹配）的结果直接丢弃。
+func TestLyricsRetryScheduling(t *testing.T) {
+	s := &Server{
+		queue:   queue.New(nil, queue.ModeLoop, queue.Options{}),
+		quality: "lossless",
+		results: make(chan any, 8),
+		playing: &ipc.Playing{Song: netease.Song{ID: 1, Name: "歌"}},
+	}
+	// 切歌后的过期结果：不安排重试。
+	s.handleLyrics(lyricsResult{songID: 2, err: errors.New("x")})
+	if s.lyricsTimer != nil || s.lyricsAttempt != 0 {
+		t.Fatal("过期歌词结果不应触发重试")
+	}
+	// 失败：安排重试，直到上限。
+	for i := 1; i <= lyricsMaxRetries; i++ {
+		s.handleLyrics(lyricsResult{songID: 1, err: errors.New("x")})
+		if s.lyricsAttempt != i || s.lyricsTimer == nil {
+			t.Fatalf("第 %d 次失败应安排重试: attempt=%d", i, s.lyricsAttempt)
+		}
+	}
+	s.handleLyrics(lyricsResult{songID: 1, err: errors.New("x")})
+	if s.lyricsAttempt != lyricsMaxRetries {
+		t.Fatal("超过上限后不应继续安排重试")
+	}
+	// 成功：计数归零。
+	s.handleLyrics(lyricsResult{songID: 1, lines: []netease.LyricLine{{Time: 1, Text: "词"}}})
+	if s.lyricsAttempt != 0 || s.lyricsSongID != 1 {
+		t.Fatal("成功后应重置计数并缓存歌词")
+	}
+}
+
 func TestServerLifecycle(t *testing.T) {
 	_, done := setupServer(t)
 	dirs := config.DefaultDirs()

@@ -95,6 +95,7 @@ func (s *Server) refresh() {
 		s.retryNow()
 	}
 	if s.playing != nil && !s.loading && s.retrySong == nil && s.lyricsSongID != s.playing.Song.ID {
+		s.lyricsAttempt = 0 // 手动刷新：重置重试计数
 		s.fetchLyrics(s.playing.Song.ID)
 	}
 	s.checkLogin(false)
@@ -211,6 +212,8 @@ func (s *Server) handleResult(res any) {
 		s.handleSongURL(r)
 	case lyricsResult:
 		s.handleLyrics(r)
+	case lyricsRetryResult:
+		s.handleLyricsRetry(r)
 	case gapExpiredResult:
 		s.gapExpired(r.seq)
 	case retryResult:

@@ -231,8 +231,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err == nil {
 			m.playlists.data = msg.playlists
 			m.playlists.list.SetItems(playlistNames(msg.playlists))
+			return m, nil
 		}
-		return m, nil
+		// 拉取失败：自动重试直到成功（重试本身即网络探测）。
+		return m, m.schedulePlaylistsRetry()
+	case playlistsRetryMsg:
+		// 已成功、正在拉取或已有新失败（新定时器已安排）时不重复发起。
+		if m.playlists.err == nil || m.playlists.loading {
+			return m, nil
+		}
+		m.playlists.loading = true
+		return m, fetchPlaylistsCmd(m.srv)
 	case songsFetchedMsg:
 		// 过期响应（快速切换歌单时先发出的慢请求）直接丢弃。
 		if msg.playlistID != m.songs.playlist.ID {
@@ -243,8 +252,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err == nil {
 			m.songs.data = msg.songs
 			m.songs.list.SetItems(songNames(msg.songs))
+			return m, nil
 		}
-		return m, nil
+		return m, m.scheduleSongsRetry(msg.playlistID)
+	case songsRetryMsg:
+		// 离开歌曲页后不再后台重试（重新进入歌单会触发全新拉取）。
+		if m.page != pageSongs || msg.playlistID != m.songs.playlist.ID || m.songs.err == nil || m.songs.loading {
+			return m, nil
+		}
+		m.songs.loading = true
+		return m, fetchSongsCmd(m.srv, msg.playlistID)
 	case lyricsMsg:
 		return m.handleLyrics(msg)
 	case lyricTickMsg:
@@ -646,7 +663,7 @@ func (m Model) playlistsBody() bodyView {
 	case m.playlists.loading:
 		return bodyView{kind: bodyNotice, notice: "正在加载歌单…"}
 	case m.playlists.err != nil:
-		return bodyView{kind: bodyNotice, notice: m.playlists.err.Error() + "，按 r 重试", isErr: true}
+		return bodyView{kind: bodyNotice, notice: m.playlists.err.Error() + "，自动重试中（按 r 立即刷新）", isErr: true}
 	default:
 		l := m.playlists.list
 		return bodyView{kind: bodyList, list: listView{
@@ -665,7 +682,7 @@ func (m Model) songsBody() bodyView {
 	case m.songs.loading:
 		b.kind, b.notice = bodyNotice, "正在加载歌曲…"
 	case m.songs.err != nil:
-		b.kind, b.notice, b.isErr = bodyNotice, m.songs.err.Error()+"，按 r 重试", true
+		b.kind, b.notice, b.isErr = bodyNotice, m.songs.err.Error()+"，自动重试中（按 r 立即刷新）", true
 	default:
 		l := m.songs.list
 		b.kind, b.list = bodyList, listView{
