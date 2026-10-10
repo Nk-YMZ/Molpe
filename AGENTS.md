@@ -115,6 +115,8 @@ UI 分层约定（交互/渲染解耦）：
 - 配置统一、可校验，为后续演进留出余地
 - 妥善处理错误、异步任务和外部进程（尤其 mpv 子进程的生命周期与清理）
 - 不记录、不提交登录凭据、Cookie 等敏感信息；敏感存储文件不得进入 Git
+- 需要用户手动测试时，提醒用户使用根目录 `dev.sh`（改了后端代码用 `./dev.sh -r`）；
+  该脚本测不到 systemd 自动拉起后端链路，且与正式版同跑时 MPRIS 归先启动者
 
 ## 当前开发环境（2026-09-19 检测）
 
@@ -251,3 +253,4 @@ Arch Linux 打包：
   BUILDDIR=/tmp/molpe-build/build SRCDEST=/tmp/molpe-build/srcdest PKGDEST=dist makepkg -f`
   （BUILDDIR 与 SRCDEST 必须是不同子目录，相同路径会导致源码缓存与构建目录冲突），
   不得在仓库根目录裸跑 makepkg（会留下 src/、pkg/、molpe/ 杂物）
+
