@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
-
-	"github.com/go-musicfox/netease-music/util"
 )
 
 // DefaultQuality 是默认音质偏好。
@@ -45,12 +43,14 @@ func (c *Client) SongURL(id int64, quality string) (*SongURL, error) {
 		"level":      NormalizeQuality(quality),
 		"encodeType": "flac",
 	}
-	options := &util.Options{
-		Crypto: "eapi",
-		Url:    "/api/song/enhance/player/url/v1",
+	code, body, err := c.doEapi(
+		"https://interface3.music.163.com/eapi/song/enhance/player/url/v1",
+		"/api/song/enhance/player/url/v1",
+		data,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("获取歌曲 %d 播放地址失败（网络传输错误）: %w", id, err)
 	}
-	code, body, _ := util.CreateRequest("POST",
-		"https://interface3.music.163.com/eapi/song/enhance/player/url/v1", data, options)
 	if code != 200 {
 		return nil, requestError(fmt.Sprintf("获取歌曲 %d 播放地址", id), code, body)
 	}

@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/go-musicfox/netease-music/service"
 	"github.com/go-musicfox/netease-music/util"
 	"github.com/imroc/req/v3"
 )
@@ -130,13 +129,12 @@ type Account struct {
 
 // AccountInfo 查询当前登录账号；未登录时返回 (nil, nil)。
 func (c *Client) AccountInfo() (*Account, error) {
-	s := &service.UserAccountService{}
-	code, body := s.AccountInfo()
+	code, body, err := c.doWeapi("nuser/account/get", nil)
+	if err != nil {
+		return nil, fmt.Errorf("查询账号信息失败（网络传输错误）: %w", err)
+	}
 	if code != 200 {
 		return nil, requestError("查询账号信息", code, body)
-	}
-	if len(body) == 0 {
-		return nil, fmt.Errorf("查询账号信息失败: 空响应")
 	}
 	var resp struct {
 		Account *struct {
@@ -161,13 +159,13 @@ func (c *Client) AccountInfo() (*Account, error) {
 
 // RefreshLogin 刷新登录态，延长 Cookie 有效期。
 func (c *Client) RefreshLogin() error {
-	s := &service.LoginRefreshService{}
-	code, _, err := s.LoginRefresh()
+	util.ApplyRequestStrategy(c.jar) // 为 Cookie 应用反风控策略
+	code, body, err := c.doWeapi("login/token/refresh", nil)
 	if err != nil {
-		return fmt.Errorf("刷新登录态失败: %w", err)
+		return fmt.Errorf("刷新登录态失败（网络传输错误）: %w", err)
 	}
 	if code != 200 {
-		return fmt.Errorf("刷新登录态失败: code=%v", code)
+		return requestError("刷新登录态", code, body)
 	}
 	return nil
 }

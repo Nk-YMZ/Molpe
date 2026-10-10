@@ -8,8 +8,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-
-	"github.com/go-musicfox/netease-music/service"
 )
 
 // LyricLine 是一句带时间戳的歌词。
@@ -21,8 +19,15 @@ type LyricLine struct {
 // Lyrics 获取歌曲歌词。includeTranslation 为 true 时，翻译按相同时间戳
 // 合并到对应歌词行之后（“原文 译文”）；时间戳对不上的翻译行直接丢弃。
 func (c *Client) Lyrics(id int64, includeTranslation bool) ([]LyricLine, error) {
-	svc := &service.LyricService{ID: strconv.FormatInt(id, 10)}
-	code, body := svc.Lyric()
+	code, body, err := c.doLinuxapi("https://music.163.com/api/song/lyric", map[string]string{
+		"id": strconv.FormatInt(id, 10),
+		"lv": "-1",
+		"kv": "-1",
+		"tv": "-1",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("获取歌曲 %d 歌词失败（网络传输错误）: %w", id, err)
+	}
 	if code != 200 {
 		return nil, requestError(fmt.Sprintf("获取歌曲 %d 歌词", id), code, body)
 	}

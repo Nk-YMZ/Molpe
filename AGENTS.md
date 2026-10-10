@@ -20,7 +20,9 @@
 
 - Go 开发
 - Bubble Tea v2 / Bubbles v2 / Lip Gloss v2 构建 TUI（注意：v2 导入路径为 `charm.land/...`，如 `charm.land/bubbletea/v2`）
-- 网易云接口统一使用 `github.com/go-musicfox/netease-music`（`service` + `util` 包），不引入其他网易云 API
+- 网易云接口加解密统一使用 `github.com/go-musicfox/netease-music` 的 `util` 包（不引入其他网易云 API）；
+  传输层不走库的 `service`/`CreateRequest`，统一由 `internal/netease/request.go` 以 req/v3
+  Chrome TLS 指纹发送（见下）
 - mpv 负责音频播放和解码，通过 IPC（JSON IPC socket）控制
 - D-Bus/MPRIS 与桌面环境集成（预计使用 godbus/dbus 类库）
 - 统一配置文件，遵循 XDG 目录规范（`$XDG_CONFIG_HOME`、`$XDG_DATA_HOME`、`$XDG_CACHE_HOME`）
@@ -93,12 +95,14 @@ UI 分层约定（交互/渲染解耦）：
 
 模块名为 `molpe`，远程仓库 `git@github.com:Nk-YMZ/Molpe.git`（主分支 `main`）。播放队列位于 `internal/queue`，其余模块按需新增，不提前创建。
 
-## 已知坑：网易云风控（-462）
+## 已知坑：网易云风控（TLS 指纹）
 
-二维码登录接口检测 TLS 指纹，标准 Go http.Client 会被拒绝（code=-462）。
-必须使用 `github.com/imroc/req/v3` 的 `SetTLSFingerprintChrome()` 模拟浏览器指纹
-（参考 go-musicfox 的 `internal/ui/qr_login_client.go`）。获取 unikey 的请求
-不得携带共享 CookieJar；轮询请求需绑定共享 Jar 以接收登录 Cookie（MUSIC_U）。
+网易云接口检测 TLS 指纹，标准 Go http.Client 会被概率性拒绝/重置
+（二维码登录返回 -462；其他接口表现为传输层错误，库内记为哨兵码 520）。
+所有接口请求（含播放地址、歌单、歌词、账号、刷新登录）统一使用
+`github.com/imroc/req/v3` 的 `SetTLSFingerprintChrome()` 模拟浏览器指纹
+（`internal/netease/request.go`；参考 go-musicfox 的 `internal/ui/qr_login_client.go`）。
+获取 unikey 的请求不得携带共享 CookieJar；轮询请求需绑定共享 Jar 以接收登录 Cookie（MUSIC_U）。
 
 ## 模块化与简洁性原则
 
@@ -131,7 +135,7 @@ UI 分层约定（交互/渲染解耦）：
 
 - `github.com/go-musicfox/netease-music` v1.6.0（网易云接口）
 - `charm.land/bubbletea/v2` v2.0.9、`charm.land/bubbles/v2` v2.2.1、`charm.land/lipgloss/v2` v2.0.6（TUI）
-- `github.com/imroc/req/v3` v3.61.0（二维码登录的 Chrome TLS 指纹模拟）
+- `github.com/imroc/req/v3` v3.61.0（全部网易云接口的传输层：Chrome TLS 指纹模拟）
 - `github.com/telanflow/cookiejar`（Cookie 持久化到文件，Netscape 格式）
 - `github.com/skip2/go-qrcode`（终端二维码字符画渲染）
 
