@@ -44,8 +44,7 @@ type keyMap struct {
 	ModeCycle  key.Binding
 	VolumeUp   key.Binding
 	VolumeDown key.Binding
-	Refresh    key.Binding
-	RefreshQR  key.Binding
+	Refresh    key.Binding // 全局刷新：前后端状态强制对齐（自救入口）
 	Queue      key.Binding // 播放队列弹窗
 	Delete     key.Binding // 弹窗内删除选中曲目
 	Theme      key.Binding // 主题选择弹窗
@@ -70,7 +69,6 @@ func defaultKeyMap() keyMap {
 		VolumeUp:   key.NewBinding(key.WithKeys("+", "="), key.WithHelp("+/-", "音量")),
 		VolumeDown: key.NewBinding(key.WithKeys("-"), key.WithHelp("", "")),
 		Refresh:    key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "刷新")),
-		RefreshQR:  key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "刷新二维码")),
 		Queue:      key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "队列")),
 		Delete:     key.NewBinding(key.WithKeys("delete", "ctrl+d"), key.WithHelp("del", "删除")),
 		Theme:      key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "主题")),
@@ -174,7 +172,7 @@ func (m Model) ServerGone() bool { return m.serverGone }
 func (m Model) ShortHelp() []key.Binding {
 	switch m.page {
 	case pageLogin:
-		return []key.Binding{m.keys.RefreshQR, m.keys.Detach, m.keys.Quit}
+		return []key.Binding{m.keys.Refresh, m.keys.Detach, m.keys.Quit}
 	case pagePlaylists:
 		return []key.Binding{m.keys.Up, m.keys.Down, m.keys.Enter, m.keys.Next, m.keys.Prev,
 			m.keys.ModeCycle, m.keys.Queue, m.keys.Theme, m.keys.VolumeUp, m.keys.Refresh, m.keys.Detach, m.keys.Quit}
@@ -319,11 +317,8 @@ func (m *Model) applyState(st ipc.State) tea.Cmd {
 			m.page = pagePlaylists
 			cmds = append(cmds, m.fetchPlaylists())
 		case st.Account == nil && m.page == pageChecking:
+			// 二维码会话由后端在确认未登录后自动创建（含过期重建）。
 			m.page = pageLogin
-			if st.QR == nil {
-				// 后端尚无二维码会话（如启动后即断开重连）：主动请求一份。
-				_ = m.srv.Send(ipc.TQRNew, nil)
-			}
 		}
 	}
 
@@ -405,6 +400,12 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return nm, cmd
 	}
 
+	// 全局刷新（自救）：任何页面可用，强制前后端重新对齐所有状态，
+	// 不影响当前播放与队列。
+	if key.Matches(msg, m.keys.Refresh) {
+		return m, m.globalRefresh()
+	}
+
 	if key.Matches(msg, m.keys.Toggle) && m.st.Playing != nil {
 		_ = m.srv.Send(ipc.TToggle, nil)
 		return m, nil
@@ -441,11 +442,6 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch m.page {
-	case pageLogin:
-		if key.Matches(msg, m.keys.RefreshQR) {
-			_ = m.srv.Send(ipc.TQRNew, nil)
-			return m, nil
-		}
 	case pagePlaylists:
 		switch {
 		case key.Matches(msg, m.keys.Up):
@@ -456,8 +452,6 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.playlists.list.GoTop()
 		case key.Matches(msg, m.keys.Bottom):
 			m.playlists.list.GoBottom()
-		case key.Matches(msg, m.keys.Refresh):
-			return m, m.fetchPlaylists()
 		case key.Matches(msg, m.keys.Enter):
 			i := m.playlists.list.Selected()
 			if i < 0 || i >= len(m.playlists.data) {
@@ -478,9 +472,6 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.songs.list.GoTop()
 		case key.Matches(msg, m.keys.Bottom):
 			m.songs.list.GoBottom()
-		case key.Matches(msg, m.keys.Refresh):
-			m.songs.loading = true
-			return m, m.fetchSongs(m.songs.playlist.ID)
 		case key.Matches(msg, m.keys.Back):
 			m.page = pagePlaylists
 		case key.Matches(msg, m.keys.Enter):
@@ -540,6 +531,21 @@ func (m Model) listHeight(extra int) int {
 		return 1
 	}
 	return h
+}
+
+// globalRefresh 全局刷新（r 键）：后端重新对齐播放/登录/歌词状态并推送
+// 全量快照；前端重新拉取歌单列表与当前歌单歌曲。幂等，连按无害。
+func (m *Model) globalRefresh() tea.Cmd {
+	_ = m.srv.Send(ipc.TRefresh, nil)
+	var cmds []tea.Cmd
+	if c := m.fetchPlaylists(); c != nil {
+		cmds = append(cmds, c)
+	}
+	if m.page == pageSongs && m.songs.playlist.ID != 0 {
+		m.songs.loading = true
+		cmds = append(cmds, m.fetchSongs(m.songs.playlist.ID))
+	}
+	return tea.Batch(cmds...)
 }
 
 // fetchPlaylists 向后端请求歌单列表。

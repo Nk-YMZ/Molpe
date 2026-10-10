@@ -72,8 +72,8 @@ func (s *Server) handleMessage(msg ipc.Message) {
 		if msg.DecodeData(&c) == nil {
 			s.handleRemove(c)
 		}
-	case ipc.TQRNew:
-		s.newQR()
+	case ipc.TRefresh:
+		s.refresh()
 	case ipc.TSetTheme:
 		var c ipc.ThemeCmd
 		if msg.DecodeData(&c) == nil {
@@ -84,6 +84,21 @@ func (s *Server) handleMessage(msg ipc.Message) {
 	case ipc.TShutdown:
 		s.shutdown()
 	}
+}
+
+// refresh 全局刷新（前端 r 键，自救入口）：重新对齐后端持有的状态并推送
+// 全量快照。幂等、不中断播放与队列：催动等待中的网络重试、补拉缺失的
+// 歌词、重新确认登录态（确认未登录时自动重建二维码会话，见 handleLogin）。
+func (s *Server) refresh() {
+	if s.retrySong != nil {
+		// 等待网络重试中：立即重试，不等定时器。
+		s.retryNow()
+	}
+	if s.playing != nil && !s.loading && s.retrySong == nil && s.lyricsSongID != s.playing.Song.ID {
+		s.fetchLyrics(s.playing.Song.ID)
+	}
+	s.checkLogin(false)
+	s.pushState()
 }
 
 // handleGetPlaylists 异步拉取用户歌单并应答。

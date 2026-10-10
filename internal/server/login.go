@@ -42,12 +42,20 @@ func (s *Server) checkLogin(startup bool) {
 	}()
 }
 
-// handleLogin 处理登录态查询结果。
+// handleLogin 处理登录态查询结果。网络错误与“确认未登录”严格区分：
+// 查询失败保留现有登录态（仅提示），只有确认未登录才清除账号；
+// 确认未登录且无可用二维码会话（无会话或已过期）时自动重建，
+// 覆盖启动与全局刷新两个入口。
 func (s *Server) handleLogin(r loginResult) {
 	s.checked = true
-	s.account = r.account
 	if r.err != nil {
 		s.pushNote("检查登录状态失败："+r.err.Error(), true)
+		s.pushState()
+		return
+	}
+	s.account = r.account
+	if s.account == nil && (s.qr == nil || s.qrCode == netease.QRCodeExpired) {
+		s.newQR()
 	}
 	s.pushState()
 	if r.startup && r.account != nil && s.autoPlay && s.playing != nil {
@@ -57,7 +65,7 @@ func (s *Server) handleLogin(r loginResult) {
 	}
 }
 
-// newQR 生成新的登录二维码（首次进入登录页或手动刷新）。
+// newQR 生成新的登录二维码（确认未登录后自动创建，含过期重建）。
 func (s *Server) newQR() {
 	s.qrSeq++
 	seq := s.qrSeq

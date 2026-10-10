@@ -43,7 +43,7 @@ const (
 	TCycleMode    Type = "cycle_mode"    // 循环切换播放模式
 	TVolumeDelta  Type = "volume_delta"  // 调整音量（VolumeCmd）
 	TRemove       Type = "remove"        // 从队列删除条目（RemoveCmd）
-	TQRNew        Type = "qr_new"        // 重新生成登录二维码（无载荷）
+	TRefresh      Type = "refresh"       // 全局刷新：后端重新对齐所有状态（无载荷）
 	TSetTheme     Type = "set_theme"     // 同步主题选择（ThemeCmd）
 	TShutdown     Type = "shutdown"      // 完全退出：停止播放并结束后端
 )

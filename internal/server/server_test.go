@@ -2,6 +2,7 @@ package server
 
 import (
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -179,6 +180,48 @@ func TestPlayerExitedRecovery(t *testing.T) {
 	s.handlePlayerExited()
 	if s.retrySong == nil || !s.paused || !s.state().NetRetry {
 		t.Fatal("播放中进程退出应接入待播重试")
+	}
+}
+
+// TestHandleLoginKeepsAccountOnError 登录态查询失败（网络错误）时保留现有
+// 登录态，不误判为未登录。
+func TestHandleLoginKeepsAccountOnError(t *testing.T) {
+	s := &Server{
+		queue:   queue.New(nil, queue.ModeLoop, queue.Options{}),
+		quality: "lossless",
+		results: make(chan any, 1),
+		account: &netease.Account{ID: 7, Nickname: "某人"},
+	}
+	s.handleLogin(loginResult{err: errors.New("网络错误")})
+	if s.account == nil || s.account.ID != 7 {
+		t.Fatal("查询失败不应清除登录态")
+	}
+	if !s.checked {
+		t.Fatal("查询结束应标记已检查")
+	}
+}
+
+// TestRefresh 全局刷新：催动等待中的网络重试（转入加载中），不中断当前状态。
+func TestRefresh(t *testing.T) {
+	client, err := netease.NewClient(filepath.Join(t.TempDir(), "cookies"))
+	if err != nil {
+		t.Fatalf("创建客户端失败: %v", err)
+	}
+	s := &Server{
+		client:    client,
+		queue:     queue.New(nil, queue.ModeLoop, queue.Options{}),
+		quality:   "lossless",
+		results:   make(chan any, 8),
+		playing:   &ipc.Playing{Song: netease.Song{ID: 1, Name: "歌"}},
+		retrySong: &netease.Song{ID: 1, Name: "歌"},
+	}
+	s.refresh()
+	// 等待中的重试被立即催动：清空待重试并转入加载中（异步拉地址）。
+	if s.retrySong != nil || !s.loading {
+		t.Fatalf("refresh 应立即重试待播曲目: retry=%v loading=%v", s.retrySong, s.loading)
+	}
+	if !s.state().Loading {
+		t.Fatal("快照应反映加载中")
 	}
 }
 
