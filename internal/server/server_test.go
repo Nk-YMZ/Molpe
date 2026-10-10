@@ -100,6 +100,28 @@ func TestPlayFailureConvergence(t *testing.T) {
 	}
 }
 
+// TestToggleDuringLoading 加载中按播放键只翻转播放意图：
+// 不触碰播放器与位置锚点，loading 状态保持不变。
+func TestToggleDuringLoading(t *testing.T) {
+	s := &Server{
+		queue:   queue.New(nil, queue.ModeLoop, queue.Options{}),
+		quality: "lossless",
+		loading: true,
+		playing: &ipc.Playing{Song: netease.Song{ID: 1, Name: "歌"}},
+	}
+	s.toggle()
+	if !s.paused || !s.loading {
+		t.Fatalf("加载中暂停应仅翻转意图位: paused=%v loading=%v", s.paused, s.loading)
+	}
+	if !s.state().Loading || !s.state().Paused {
+		t.Fatal("快照应反映加载中与暂停意图")
+	}
+	s.toggle()
+	if s.paused || !s.loading {
+		t.Fatalf("再次按下应恢复播放意图: paused=%v loading=%v", s.paused, s.loading)
+	}
+}
+
 func TestServerLifecycle(t *testing.T) {
 	_, done := setupServer(t)
 	dirs := config.DefaultDirs()

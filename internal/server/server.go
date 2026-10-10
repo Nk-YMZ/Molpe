@@ -51,7 +51,8 @@ type Server struct {
 	mprisErr error
 
 	playing *ipc.Playing // 当前曲目与实际音质，nil 表示无
-	paused  bool
+	paused  bool         // 用户期望的播放状态（true 为暂停/待播）
+	loading bool         // 播放地址拉取中（切歌已生效、开播或失败收敛前）；期间无音频出声，位置冻结
 	anchor  posAnchor
 
 	gapSong  *netease.Song // 间隔中待开播的下一首
@@ -343,6 +344,7 @@ func (s *Server) state() ipc.State {
 		Quality:  s.quality,
 		Queue:    s.queue.Snapshot(),
 		NetRetry: s.retrySong != nil,
+		Loading:  s.loading,
 	}
 	if s.qr != nil {
 		st.QR = &ipc.QRStatus{URL: s.qr.URL, Code: s.qrCode}

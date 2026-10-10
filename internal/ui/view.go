@@ -83,6 +83,7 @@ type statusView struct {
 	total    int
 	nextUp   int    // 待播数量
 	netRetry bool   // 播放失败等待网络自动重试中
+	loading  bool   // 播放地址拉取中（无音频出声，位置冻结）
 	note     string // 一次性提示
 	noteErr  bool   // note 按错误样式展示
 }
@@ -441,11 +442,11 @@ func renderStatus(st statusView, sty styles) string {
 		return sty.Faint.Render("♪ 未在播放")
 	}
 	icon := sty.glyphs.Playing
-	if st.paused {
+	if st.paused || st.loading {
 		icon = sty.glyphs.Paused
 	}
 	trackStyle := sty.Title
-	if st.paused {
+	if st.paused || st.loading {
 		trackStyle = sty.Muted
 	}
 	status := sty.Accent2.Render(icon) + trackStyle.Render(st.track)
@@ -454,6 +455,8 @@ func renderStatus(st statusView, sty styles) string {
 	}
 	if st.netRetry {
 		status += sty.Accent2.Render("  ·  等待网络")
+	} else if st.loading {
+		status += sty.Muted.Render("  ·  加载中")
 	}
 	if st.nextUp > 0 {
 		status += sty.Faint.Render(fmt.Sprintf("  待播 %d", st.nextUp))

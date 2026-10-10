@@ -27,12 +27,13 @@ func listenServerCmd(c *ipc.Client) tea.Cmd {
 }
 
 // playPos 返回当前播放位置（秒）：以快照中的位置锚点为基准本地外推，
-// 无需向后端或 mpv 周期查询。暂停/无播放时返回锚点值。
+// 无需向后端或 mpv 周期查询。暂停/无播放/加载中（地址未就绪，无音频出声）
+// 时返回锚点值。
 func (m Model) playPos() float64 {
 	if m.st.Playing == nil {
 		return 0
 	}
-	if m.st.Paused {
+	if m.st.Paused || m.st.Loading {
 		return m.st.Pos
 	}
 	return m.st.Pos + time.Since(m.stAt).Seconds()
@@ -46,9 +47,9 @@ const progressInterval = time.Second
 type progressTickMsg struct{ seq int }
 
 // scheduleProgressTick 安排进度条刷新：播放中每秒唤醒一次重绘（位置在
-// 渲染时按锚点外推计算）；暂停、无播放、已在运行时不启动。
+// 渲染时按锚点外推计算）；暂停、无播放、加载中、已在运行时不启动。
 func (m *Model) scheduleProgressTick() tea.Cmd {
-	if m.progressTicking || m.st.Paused || m.st.Playing == nil {
+	if m.progressTicking || m.st.Paused || m.st.Loading || m.st.Playing == nil {
 		return nil
 	}
 	m.progressTicking = true

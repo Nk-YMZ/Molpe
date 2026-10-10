@@ -73,19 +73,26 @@ var retryBackoff = []time.Duration{
 	2 * time.Second, 5 * time.Second, 10 * time.Second, 20 * time.Second, 30 * time.Second,
 }
 
-// playSong 切换到指定歌曲并拉取播放地址（异步）。先把当前曲状态切换
-// 到位并推送——操作立即在界面/MPRIS 生效，保证跟手；成功仅回填实际
-// 音质，失败由 handlePlayFailure 收敛为待播重试。每次发起都递增请求
-// 序号，快速连续切歌时先发出的慢响应会被 handleSongURL 按序号丢弃。
+// playSong 切换到指定歌曲并拉取播放地址（异步）。切歌立即生效：旧曲停止
+// 出声、当前曲切换到位并推送（loading 加载中，位置冻结在 0），界面与
+// MPRIS 所见与实际出声严格一致；地址就绪后按意图位（paused）开播，
+// 失败由 handlePlayFailure 收敛为待播重试。每次发起都递增请求序号，
+// 快速连续切歌时先发出的慢响应会被 handleSongURL 按序号丢弃。
 func (s *Server) playSong(song netease.Song) {
 	s.playSeq++
 	seq := s.playSeq
-	// 乐观切换：立即生效。旧曲在地址就绪前继续出声；拉取失败时
-	// handlePlayFailure 会停止旧曲并收敛为待播重试状态。
+	s.loading = true
 	s.playing = &ipc.Playing{Song: song, Level: s.quality}
-	s.anchor.set(0, s.paused)
+	s.anchor.set(0, true) // 加载期间位置冻结
 	s.lyrics = nil
 	s.lyricsSongID = 0
+	if s.player != nil {
+		// 旧曲立即静音；播放器已不可用时关闭，开播时重建。
+		if err := s.player.Stop(); err != nil {
+			s.player.Close()
+			s.player = nil
+		}
+	}
 	s.publishState()
 	s.pushState()
 	quality := s.quality
@@ -100,6 +107,7 @@ func (s *Server) handleSongURL(r songURLResult) {
 	if r.seq != s.playSeq {
 		return // 过期响应
 	}
+	s.loading = false
 	if r.err != nil {
 		s.handlePlayFailure(r.song, r.err)
 		return
@@ -125,15 +133,15 @@ func (s *Server) handleSongURL(r songURLResult) {
 		s.handlePlayFailure(r.song, err)
 		return
 	}
-	// mpv 的 pause 属性跨 loadfile 保持，这里无条件把暂停状态同步给 mpv：
-	// 暂停中切歌后新曲目仍为暂停，明确开播时解除上一首遗留的暂停。
+	// 按切歌时定下的播放意图同步暂停状态（加载中用户可能按了暂停；
+	// mpv 的 pause 属性跨 loadfile 保持，需无条件同步）。
 	if err := s.player.SetPause(s.paused); err != nil {
 		s.pushNote(err.Error(), true)
 	}
 	// 开播成功：清除可能存在的失败重试状态；此前处于重试流程时提示恢复。
 	recovered := s.retryAttempt > 0
 	s.cancelRetry()
-	// 乐观切换时已切到目标曲：回填实际音质，并以加载时刻重置位置锚点。
+	// 切歌时已就位：回填实际音质，并以加载时刻重置位置锚点。
 	s.playing.Level = r.url.Level
 	s.anchor.set(0, s.paused)
 	s.publishState()
@@ -175,6 +183,12 @@ func (s *Server) toggle() {
 	if s.retrySong != nil {
 		// 等待网络重试中：播放键即跳过等待，立即重试。
 		s.retryNow()
+		return
+	}
+	if s.loading {
+		// 加载中没有可操作的音频：仅翻转播放意图，地址就绪后按意图开播。
+		s.paused = !s.paused
+		s.pushState()
 		return
 	}
 	if s.gapSong != nil {
@@ -402,7 +416,8 @@ func (s *Server) publishState() {
 	switch {
 	case s.playing == nil:
 		s.mpris.SetStatus("Stopped")
-	case s.paused:
+	case s.loading || s.paused:
+		// 加载中没有音频出声（位置冻结），与暂停一样对外报 Paused。
 		s.mpris.SetStatus("Paused")
 	default:
 		s.mpris.SetStatus("Playing")
@@ -418,6 +433,12 @@ func (s *Server) handleMprisEvent(ev mpris.Event) {
 		if s.retrySong != nil {
 			// 等待网络重试中：播放键即跳过等待，立即重试。
 			s.retryNow()
+			return
+		}
+		if s.loading {
+			// 加载中：仅确立播放意图，地址就绪后开播。
+			s.paused = false
+			s.pushState()
 			return
 		}
 		if s.gapSong != nil {
@@ -438,6 +459,12 @@ func (s *Server) handleMprisEvent(ev mpris.Event) {
 		if s.retrySong != nil {
 			// 等待重试期间收到暂停：放弃自动恢复，保持待播状态。
 			s.cancelRetry()
+			s.pushState()
+			return
+		}
+		if s.loading {
+			// 加载中：仅记录暂停意图，地址就绪后保持暂停。
+			s.paused = true
 			s.pushState()
 			return
 		}

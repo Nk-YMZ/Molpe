@@ -78,6 +78,7 @@ type State struct {
 	Pos      float64          `json:"pos"`                 // 推送时刻的播放位置锚点（秒），前端据此本地外推
 	GapLeft  float64          `json:"gap_left,omitempty"`  // 歌曲间隔剩余秒数，>0 表示间隔中（下一首待播）
 	NetRetry bool             `json:"net_retry,omitempty"` // 播放失败，等待网络恢复自动重试中
+	Loading  bool             `json:"loading,omitempty"`   // 播放地址拉取中（无音频出声，位置冻结）
 	Volume   int              `json:"volume"`              // 音量百分比（0-100）
 	Quality  string           `json:"quality"`             // 配置的音质偏好
 	Queue    queue.State      `json:"queue"`               // 队列快照（含模式）

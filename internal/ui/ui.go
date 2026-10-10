@@ -375,7 +375,7 @@ func (m *Model) applyState(st ipc.State) tea.Cmd {
 		m.revealSeq++
 		cmds = append(cmds, m.scheduleRevealTick())
 	}
-	if trackChanged || prev.Paused != st.Paused {
+	if trackChanged || prev.Paused != st.Paused || prev.Loading != st.Loading {
 		cmds = append(cmds, m.scheduleProgressTick(), m.scheduleLyricTick())
 	}
 
@@ -689,6 +689,7 @@ func (m Model) statusState() statusView {
 	}
 	st.nextUp = len(m.st.Queue.NextUp)
 	st.netRetry = m.st.NetRetry
+	st.loading = m.st.Loading
 	st.noteErr = m.noteIsErr
 	return st
 }
