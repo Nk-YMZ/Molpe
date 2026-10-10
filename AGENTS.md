@@ -122,6 +122,12 @@ UI 分层约定（交互/渲染解耦）：
 - 需要用户手动测试时，提醒用户使用根目录 `dev.sh`（改了后端代码用 `./dev.sh -r`）；
   该脚本测不到 systemd 自动拉起后端链路，且与正式版同跑时 MPRIS 归先启动者
 
+## 已知问题（暂不处理，不影响使用）
+
+- 歌曲间隔中连续快进/快退有概率弹出「mpv 命令失败」提示：疑似第二次跳转落在开播后
+  文件仍在缓冲的窗口内，`set_property time-pos` 尚不可用（property unavailable），
+  该次跳转被丢弃，播放本身不受影响（间隔中首次跳转走 loadfile start 原子定位，无此问题）。
+
 ## 当前开发环境（2026-09-19 检测）
 
 - Go 1.27.1（linux/amd64），GOPATH=`/home/oracle/go`，GOPROXY=`proxy.golang.org,direct`
