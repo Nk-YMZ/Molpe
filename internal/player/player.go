@@ -95,6 +95,13 @@ func (p *Player) SetVolume(v int) error {
 	return err
 }
 
+// Stop 停止当前播放并清空播放状态，进程保持空闲；
+// 用于播放失败后收敛状态（旧曲停止出声，等待重试）。
+func (p *Player) Stop() error {
+	_, err := p.command("stop")
+	return err
+}
+
 // SetEndCallback 注册曲目自然播完（end-file 且原因为 eof）时的回调，
 // 用于队列自动连播。回调在独立 goroutine 中触发；重复调用仅首次生效。
 func (p *Player) SetEndCallback(cb func()) {

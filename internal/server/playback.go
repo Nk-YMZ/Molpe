@@ -61,6 +61,18 @@ type gapExpiredResult struct {
 	seq int
 }
 
+// retryResult 播放重试定时器到期；seq 用于丢弃切歌/点歌后的残留定时器。
+type retryResult struct {
+	seq int
+}
+
+// retryBackoff 播放失败后的自动重试间隔；用尽后固定为最后一个值，
+// 持续重试直到成功或用户切歌。重试本身即网络探测：恢复后最多一个
+// 间隔内自动开播。
+var retryBackoff = []time.Duration{
+	2 * time.Second, 5 * time.Second, 10 * time.Second, 20 * time.Second, 30 * time.Second,
+}
+
 // playSong 拉取歌曲播放地址（异步）。每次发起都递增请求序号，
 // 快速连续切歌时先发出的慢响应会被 handleSongURL 按序号丢弃。
 func (s *Server) playSong(song netease.Song) {
@@ -79,13 +91,13 @@ func (s *Server) handleSongURL(r songURLResult) {
 		return // 过期响应
 	}
 	if r.err != nil {
-		s.pushNote(r.err.Error(), true)
+		s.handlePlayFailure(r.song, r.err)
 		return
 	}
 	if s.player == nil {
 		p, err := player.Start()
 		if err != nil {
-			s.pushNote(err.Error(), true)
+			s.handlePlayFailure(r.song, err)
 			return
 		}
 		p.SetEndCallback(func() {
@@ -100,7 +112,7 @@ func (s *Server) handleSongURL(r songURLResult) {
 		s.player = p
 	}
 	if err := s.player.Play(r.url.URL); err != nil {
-		s.pushNote(err.Error(), true)
+		s.handlePlayFailure(r.song, err)
 		return
 	}
 	// mpv 的 pause 属性跨 loadfile 保持，这里无条件把暂停状态同步给 mpv：
@@ -108,6 +120,9 @@ func (s *Server) handleSongURL(r songURLResult) {
 	if err := s.player.SetPause(s.paused); err != nil {
 		s.pushNote(err.Error(), true)
 	}
+	// 开播成功：清除可能存在的失败重试状态；此前处于重试流程时提示恢复。
+	recovered := s.retryAttempt > 0
+	s.cancelRetry()
 	s.playing = &ipc.Playing{Song: r.song, Level: r.url.Level}
 	s.anchor.set(0, s.paused)
 	// 切歌后重置歌词缓存并异步拉取新歌词。
@@ -116,6 +131,9 @@ func (s *Server) handleSongURL(r songURLResult) {
 	s.publishState()
 	s.pushState()
 	s.fetchLyrics(r.song.ID)
+	if recovered {
+		s.pushNote("已恢复播放："+r.song.Name, false)
+	}
 }
 
 // fetchLyrics 异步拉取歌曲歌词。
@@ -144,6 +162,11 @@ func (s *Server) handleLyrics(r lyricsResult) {
 // toggle 切换播放/暂停；恢复待播状态下播放器尚未启动时，先拉取地址开始播放。
 func (s *Server) toggle() {
 	if s.playing == nil {
+		return
+	}
+	if s.retrySong != nil {
+		// 等待网络重试中：播放键即跳过等待，立即重试。
+		s.retryNow()
 		return
 	}
 	if s.gapSong != nil {
@@ -183,6 +206,7 @@ func (s *Server) setPaused(paused bool) {
 // 切歌是明确的播放意图，暂停状态与歌曲间隔随之解除。
 func (s *Server) nextSong() {
 	s.cancelGap()
+	s.cancelRetry()
 	song, ok := s.queue.Next()
 	if !ok {
 		s.pushNote("没有可播放的下一首", false)
@@ -196,6 +220,7 @@ func (s *Server) nextSong() {
 // prevSong 沿历史队列回退一首；暂停状态与歌曲间隔随之解除。
 func (s *Server) prevSong() {
 	s.cancelGap()
+	s.cancelRetry()
 	song, ok := s.queue.Prev()
 	if !ok {
 		s.pushNote("没有更早的播放记录", false)
@@ -209,6 +234,7 @@ func (s *Server) prevSong() {
 // handleEnded 当前曲目自然播完：按队列规则连播；
 // 无可播歌曲（顺序模式到末尾）时停止。
 func (s *Server) handleEnded() {
+	s.cancelRetry() // 防御：重试等待期间不应收到自然播完事件
 	song, ok := s.queue.Next()
 	s.saveQueue()
 	if !ok {
@@ -274,6 +300,81 @@ func (s *Server) playGapSong() {
 	s.playSong(song)
 }
 
+// handlePlayFailure 播放启动失败（拉取播放地址或加载播放器出错）：
+// 停止旧曲出声，当前曲收敛为待播（暂停）状态，保证界面、MPRIS 与队列
+// 三者一致，并安排自动重试。首次失败给出明确提示，后续重试静默进行
+// （状态栏持续显示“等待网络”），成功开播时提示恢复。
+func (s *Server) handlePlayFailure(song netease.Song, err error) {
+	if s.player != nil {
+		if stopErr := s.player.Stop(); stopErr != nil {
+			// 播放器已不可用：关闭，重试时重建。
+			s.player.Close()
+			s.player = nil
+		}
+	}
+	first := s.retryAttempt == 0 && s.retrySong == nil
+	s.retrySong = &song
+	s.playing = &ipc.Playing{Song: song, Level: s.quality}
+	s.paused = true
+	s.anchor.set(0, true)
+	s.lyrics = nil
+	s.lyricsSongID = 0
+	s.publishState()
+	s.pushState()
+	if first {
+		s.pushNote("播放失败："+err.Error()+"；等待网络，将自动重试", true)
+	}
+	s.scheduleRetry()
+}
+
+// scheduleRetry 安排下一次自动重试，间隔按 retryBackoff 退避。
+func (s *Server) scheduleRetry() {
+	if s.retryTimer != nil {
+		s.retryTimer.Stop()
+	}
+	wait := retryBackoff[min(s.retryAttempt, len(retryBackoff)-1)]
+	s.retryAttempt++
+	seq := s.retrySeq
+	s.retryTimer = time.AfterFunc(wait, func() {
+		s.results <- retryResult{seq: seq}
+	})
+}
+
+// cancelRetry 取消自动重试：递增序号丢弃残留定时器，清空退避进度。
+func (s *Server) cancelRetry() {
+	s.retrySong = nil
+	s.retryAttempt = 0
+	s.retrySeq++
+	if s.retryTimer != nil {
+		s.retryTimer.Stop()
+		s.retryTimer = nil
+	}
+}
+
+// handleRetry 重试定时器到期：立即重试待播曲目；过期定时器直接丢弃。
+func (s *Server) handleRetry(r retryResult) {
+	if r.seq != s.retrySeq || s.retrySong == nil {
+		return
+	}
+	s.retryNow()
+}
+
+// retryNow 跳过剩余等待，立即重试待播曲目（恢复为播放意图）；
+// 失败会重新进入待播重试状态并安排下一次重试。
+func (s *Server) retryNow() {
+	if s.retrySong == nil {
+		return
+	}
+	song := *s.retrySong
+	s.retrySong = nil // 重试进行中；失败时由 handlePlayFailure 重新置回
+	if s.retryTimer != nil {
+		s.retryTimer.Stop()
+		s.retryTimer = nil
+	}
+	s.paused = false
+	s.playSong(song)
+}
+
 // publishState 向 MPRIS 推送当前曲目元数据与播放状态。
 func (s *Server) publishState() {
 	if s.mpris == nil {
@@ -306,6 +407,11 @@ func (s *Server) handleMprisEvent(ev mpris.Event) {
 	case mpris.EventPlayPause:
 		s.toggle()
 	case mpris.EventPlay:
+		if s.retrySong != nil {
+			// 等待网络重试中：播放键即跳过等待，立即重试。
+			s.retryNow()
+			return
+		}
 		if s.gapSong != nil {
 			// 歌曲间隔中：播放键即跳过等待，立即开播下一首。
 			s.playGapSong()
@@ -321,6 +427,12 @@ func (s *Server) handleMprisEvent(ev mpris.Event) {
 			s.setPaused(false)
 		}
 	case mpris.EventPause, mpris.EventStop:
+		if s.retrySong != nil {
+			// 等待重试期间收到暂停：放弃自动恢复，保持待播状态。
+			s.cancelRetry()
+			s.pushState()
+			return
+		}
 		if s.playing != nil {
 			s.setPaused(true)
 		}

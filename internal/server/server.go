@@ -59,6 +59,11 @@ type Server struct {
 	gapAt    time.Time     // 间隔开始时刻（计算剩余时间）
 	gapTimer *time.Timer   // 间隔一次性定时器，切歌/点歌时停止
 
+	retrySong    *netease.Song // 播放失败待重试的曲目，nil 表示无
+	retrySeq     int           // 重试定时器序号，用于丢弃切歌/点歌后的残留
+	retryAttempt int           // 已连续重试次数（决定退避间隔与提示时机）
+	retryTimer   *time.Timer   // 重试一次性定时器，切歌/点歌/退出时停止
+
 	account *netease.Account
 	checked bool // 登录态是否已确认
 
@@ -238,6 +243,9 @@ func (s *Server) shutdown() {
 		if s.gapTimer != nil {
 			s.gapTimer.Stop()
 		}
+		if s.retryTimer != nil {
+			s.retryTimer.Stop()
+		}
 		s.stopQRPoll()
 		if s.player != nil {
 			s.player.Close()
@@ -326,14 +334,15 @@ func (s *Server) reply(id int, t ipc.Type, payload any) {
 func (s *Server) state() ipc.State {
 	pos, _ := s.anchor.get()
 	st := ipc.State{
-		Checked: s.checked,
-		Account: s.account,
-		Playing: s.playing,
-		Paused:  s.paused,
-		Pos:     pos,
-		Volume:  s.volume,
-		Quality: s.quality,
-		Queue:   s.queue.Snapshot(),
+		Checked:  s.checked,
+		Account:  s.account,
+		Playing:  s.playing,
+		Paused:   s.paused,
+		Pos:      pos,
+		Volume:   s.volume,
+		Quality:  s.quality,
+		Queue:    s.queue.Snapshot(),
+		NetRetry: s.retrySong != nil,
 	}
 	if s.qr != nil {
 		st.QR = &ipc.QRStatus{URL: s.qr.URL, Code: s.qrCode}

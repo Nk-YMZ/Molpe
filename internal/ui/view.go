@@ -75,14 +75,16 @@ type loginView struct {
 // statusView 状态栏快照：只保留正在播放的核心信息，
 // 音质/模式/音量等次要信息移到头部右侧弱化显示。
 type statusView struct {
-	err     string // 非空时整行替换
-	playing bool
-	paused  bool
-	track   string // "歌名 - 艺术家"（可能处于逐字出现中，仅含已出现部分）
-	pos     int    // 歌单内位置（从 1 计），0 表示不在歌单
-	total   int
-	nextUp  int // 待播数量
-	note    string
+	err      string // 非空时整行替换
+	playing  bool
+	paused   bool
+	track    string // "歌名 - 艺术家"（可能处于逐字出现中，仅含已出现部分）
+	pos      int    // 歌单内位置（从 1 计），0 表示不在歌单
+	total    int
+	nextUp   int    // 待播数量
+	netRetry bool   // 播放失败等待网络自动重试中
+	note     string // 一次性提示
+	noteErr  bool   // note 按错误样式展示
 }
 
 // progressView 播放进度快照。
@@ -450,11 +452,18 @@ func renderStatus(st statusView, sty styles) string {
 	if st.pos > 0 {
 		status += sty.Faint.Render(fmt.Sprintf("  %d/%d", st.pos, st.total))
 	}
+	if st.netRetry {
+		status += sty.Accent2.Render("  ·  等待网络")
+	}
 	if st.nextUp > 0 {
 		status += sty.Faint.Render(fmt.Sprintf("  待播 %d", st.nextUp))
 	}
 	if st.note != "" {
-		status += sty.Faint.Render("  ·  " + st.note)
+		noteStyle := sty.Faint
+		if st.noteErr {
+			noteStyle = sty.Error
+		}
+		status += noteStyle.Render("  ·  " + st.note)
 	}
 	return status
 }

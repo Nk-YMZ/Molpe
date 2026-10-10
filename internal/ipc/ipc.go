@@ -70,16 +70,17 @@ type QRStatus struct {
 
 // State 是服务端播放状态的全量快照，hello 握手与每次变化时推送。
 type State struct {
-	Checked bool             `json:"checked"`           // 登录态是否已确认（未确认时前端显示检查中）
-	Account *netease.Account `json:"account,omitempty"` // 当前登录账号，未登录为 nil
-	QR      *QRStatus        `json:"qr,omitempty"`      // 进行中的二维码会话，无为 nil
-	Playing *Playing         `json:"playing,omitempty"`
-	Paused  bool             `json:"paused"`
-	Pos     float64          `json:"pos"`                // 推送时刻的播放位置锚点（秒），前端据此本地外推
-	GapLeft float64          `json:"gap_left,omitempty"` // 歌曲间隔剩余秒数，>0 表示间隔中（下一首待播）
-	Volume  int              `json:"volume"`             // 音量百分比（0-100）
-	Quality string           `json:"quality"`            // 配置的音质偏好
-	Queue   queue.State      `json:"queue"`              // 队列快照（含模式）
+	Checked  bool             `json:"checked"`           // 登录态是否已确认（未确认时前端显示检查中）
+	Account  *netease.Account `json:"account,omitempty"` // 当前登录账号，未登录为 nil
+	QR       *QRStatus        `json:"qr,omitempty"`      // 进行中的二维码会话，无为 nil
+	Playing  *Playing         `json:"playing,omitempty"`
+	Paused   bool             `json:"paused"`
+	Pos      float64          `json:"pos"`                 // 推送时刻的播放位置锚点（秒），前端据此本地外推
+	GapLeft  float64          `json:"gap_left,omitempty"`  // 歌曲间隔剩余秒数，>0 表示间隔中（下一首待播）
+	NetRetry bool             `json:"net_retry,omitempty"` // 播放失败，等待网络恢复自动重试中
+	Volume   int              `json:"volume"`              // 音量百分比（0-100）
+	Quality  string           `json:"quality"`             // 配置的音质偏好
+	Queue    queue.State      `json:"queue"`               // 队列快照（含模式）
 }
 
 // Note 是服务端发给前端的一次性提示；Err 为 true 时按错误展示。

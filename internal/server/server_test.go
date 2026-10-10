@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -57,6 +58,45 @@ func nextEvent(t *testing.T, c *ipc.Client, want ipc.Type) ipc.Message {
 		case <-timeout:
 			t.Fatalf("等待事件 %s 超时", want)
 		}
+	}
+}
+
+// TestPlayFailureConvergence 播放启动失败后的状态收敛：
+// 当前曲置为目标曲并进入待播（暂停）重试状态，快照对外暴露 NetRetry；
+// 取消重试后状态清除。
+func TestPlayFailureConvergence(t *testing.T) {
+	s := &Server{
+		queue:   queue.New(nil, queue.ModeLoop, queue.Options{}),
+		quality: "lossless",
+		results: make(chan any, 1),
+	}
+	song := netease.Song{ID: 1, Name: "歌", Artists: "人"}
+	s.handlePlayFailure(song, errors.New("网络不可达"))
+
+	if s.playing == nil || s.playing.Song.ID != 1 {
+		t.Fatalf("失败后当前曲应为目标曲: %+v", s.playing)
+	}
+	if !s.paused {
+		t.Fatal("失败后应收敛为待播（暂停）状态")
+	}
+	if s.retrySong == nil || s.retrySong.ID != 1 {
+		t.Fatalf("应记录待重试曲目: %+v", s.retrySong)
+	}
+	if !s.state().NetRetry {
+		t.Fatal("快照应暴露 NetRetry")
+	}
+	if s.retryAttempt != 1 || s.retryTimer == nil {
+		t.Fatalf("应安排首次重试: attempt=%d timer=%v", s.retryAttempt, s.retryTimer)
+	}
+
+	// 切歌/点歌等操作取消重试后：状态清除，到期定时器被丢弃。
+	s.cancelRetry()
+	if s.retrySong != nil || s.retryAttempt != 0 || s.state().NetRetry {
+		t.Fatal("取消重试后状态未清除")
+	}
+	s.handleRetry(retryResult{seq: 0}) // 残留定时器（序号已过期）
+	if s.retrySong != nil {
+		t.Fatal("过期重试定时器不应生效")
 	}
 }
 

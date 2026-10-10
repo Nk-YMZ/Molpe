@@ -120,9 +120,10 @@ type Model struct {
 	revealSeq     int    // 定时器序号，用于丢弃切歌后残留的过期定时器
 	revealTicking bool   // 逐字出现定时器是否在运行
 
-	errNote string // 状态栏错误提示
-	note    string // 状态栏普通提示（如队列操作反馈），到期自动清除
-	noteID  int    // 提示序号，防止过期定时器误清更新的提示
+	errNote   string // 状态栏常驻错误提示（配置/主题加载失败）
+	note      string // 状态栏一次性提示（含服务端推送的失败原因），到期自动清除
+	noteIsErr bool   // note 是否为错误提示（按错误样式展示）
+	noteID    int    // 提示序号，防止过期定时器误清更新的提示
 
 	serverGone bool // 与后端的连接已断开
 
@@ -250,6 +251,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case noteExpiredMsg:
 		if msg.id == m.noteID {
 			m.note = ""
+			m.noteIsErr = false
 		}
 		return m, nil
 	case revealTickMsg:
@@ -291,11 +293,7 @@ func (m Model) handleServerEvent(msg ipc.Message) (tea.Model, tea.Cmd) {
 	case ipc.TNote:
 		var n ipc.Note
 		if msg.DecodeData(&n) == nil {
-			if n.Err {
-				m.errNote = n.Text
-			} else {
-				cmd = m.setNote(n.Text)
-			}
+			cmd = m.setNote(n.Text, n.Err)
 		}
 	case ipc.TLyrics:
 		var lm ipc.LyricsMsg
@@ -346,6 +344,7 @@ func (m *Model) applyState(st ipc.State) tea.Cmd {
 	if trackChanged {
 		m.errNote = ""
 		m.note = ""
+		m.noteIsErr = false
 		// 切歌后重置歌词，残留滚动定时器由序号作废；新歌词由后端推送。
 		m.lyrics = nil
 		m.lyricSongID = 0
@@ -416,7 +415,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		switch {
 		case key.Matches(msg, m.keys.Queue):
 			if m.st.Playing == nil {
-				return m, m.setNote("当前没有正在播放的曲目")
+				return m, m.setNote("当前没有正在播放的曲目", false)
 			}
 			m.openQueuePopup()
 			return m, nil
@@ -522,9 +521,11 @@ const noteTTL = 3 * time.Second
 // noteExpiredMsg 提示到期消息；id 与当前提示序号一致时才清除。
 type noteExpiredMsg struct{ id int }
 
-// setNote 设置状态栏提示并安排到期自动清除。
-func (m *Model) setNote(s string) tea.Cmd {
+// setNote 设置状态栏一次性提示并安排到期自动清除；isErr 为 true 时按错误样式展示。
+// 常驻状态（如等待网络重试）不走提示，由快照字段驱动状态栏显示，恢复后自动消失。
+func (m *Model) setNote(s string, isErr bool) tea.Cmd {
 	m.note = s
+	m.noteIsErr = isErr
 	m.noteID++
 	id := m.noteID
 	return tea.Tick(noteTTL, func(time.Time) tea.Msg { return noteExpiredMsg{id} })
@@ -687,6 +688,8 @@ func (m Model) statusState() statusView {
 		st.pos, st.total = pos, total
 	}
 	st.nextUp = len(m.st.Queue.NextUp)
+	st.netRetry = m.st.NetRetry
+	st.noteErr = m.noteIsErr
 	return st
 }
 

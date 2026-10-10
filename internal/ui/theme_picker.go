@@ -80,11 +80,11 @@ func (m Model) updatePicker(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m *Model) applyTheme(name string) tea.Cmd {
 	t, err := LoadTheme(m.dirs.Config, name)
 	if err != nil {
-		return m.setNote("主题加载失败：" + err.Error())
+		return m.setNote("主题加载失败："+err.Error(), true)
 	}
 	m.theme = t
 	m.themeName = name
 	m.sty = newStyles(t)
 	_ = m.srv.Send(ipc.TSetTheme, ipc.ThemeCmd{Name: name})
-	return m.setNote("已切换主题：" + name)
+	return m.setNote("已切换主题："+name, false)
 }

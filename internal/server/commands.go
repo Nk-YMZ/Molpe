@@ -39,6 +39,7 @@ func (s *Server) handleMessage(msg ipc.Message) {
 			// 手动点歌：更新歌单队列并记录历史；下一首播放队列保留。
 			// 点歌是明确的播放意图，解除暂停状态与歌曲间隔。
 			s.cancelGap()
+			s.cancelRetry()
 			s.queue.SetPlaylist(c.Playlist)
 			s.queue.Play(c.Song)
 			s.paused = false
@@ -163,6 +164,7 @@ func (s *Server) handleRemove(c ipc.RemoveCmd) {
 // removeCurrent 移除当前播放曲并自动跳转下一首；暂停状态随之解除。
 func (s *Server) removeCurrent() {
 	s.cancelGap()
+	s.cancelRetry()
 	s.queue.RemoveCurrent()
 	song, ok := s.queue.Next()
 	s.saveQueue()
@@ -195,6 +197,8 @@ func (s *Server) handleResult(res any) {
 		s.handleLyrics(r)
 	case gapExpiredResult:
 		s.gapExpired(r.seq)
+	case retryResult:
+		s.handleRetry(r)
 	case loginResult:
 		s.handleLogin(r)
 	case qrNewResult:
