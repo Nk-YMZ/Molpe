@@ -38,6 +38,8 @@ type keyMap struct {
 	Enter      key.Binding
 	Back       key.Binding
 	Toggle     key.Binding
+	SeekBack   key.Binding
+	SeekFwd    key.Binding
 	Next       key.Binding
 	Prev       key.Binding
 	PlayNext   key.Binding
@@ -62,6 +64,8 @@ func defaultKeyMap() keyMap {
 		Enter:      key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "进入")),
 		Back:       key.NewBinding(key.WithKeys("b", "esc"), key.WithHelp("b/esc", "返回")),
 		Toggle:     key.NewBinding(key.WithKeys("space"), key.WithHelp("space", "播放/暂停")),
+		SeekBack:   key.NewBinding(key.WithKeys("left"), key.WithHelp("←/→", "快退/快进")),
+		SeekFwd:    key.NewBinding(key.WithKeys("right"), key.WithHelp("", "")),
 		Next:       key.NewBinding(key.WithKeys("]"), key.WithHelp("]", "下一首")),
 		Prev:       key.NewBinding(key.WithKeys("["), key.WithHelp("[", "上一首")),
 		PlayNext:   key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "下一首播放")),
@@ -106,6 +110,7 @@ type Model struct {
 	lyricGapBelow    int // 歌词区与进度条之间的空行数（配置 lyric_gap_below）
 	playbackGapBelow int // 播放信息块与操作帮助行之间的空行数（配置 playback_gap_below）
 	volumeStep       int // 音量调节步进百分比（配置 volume_step）
+	seekStep         int // 快退/快步进秒数（配置 seek_step）
 
 	lyricTicking    bool // 歌词滚动定时器是否在运行
 	lyricSeq        int  // 定时器序号，用于丢弃暂停/切歌后残留的过期定时器
@@ -148,6 +153,7 @@ func New(client *ipc.Client, st ipc.State, cfg config.Config, dirs config.Dirs, 
 		lyricGapBelow:    cfg.EffectiveLyricGapBelow(),
 		playbackGapBelow: cfg.EffectivePlaybackGapBelow(),
 		volumeStep:       cfg.EffectiveVolumeStep(),
+		seekStep:         cfg.EffectiveSeekStep(),
 		theme:            theme,
 		themeName:        themeName,
 		sty:              newStyles(theme),
@@ -175,12 +181,12 @@ func (m Model) ShortHelp() []key.Binding {
 	case pageLogin:
 		return []key.Binding{m.keys.Refresh, m.keys.Detach, m.keys.Quit}
 	case pagePlaylists:
-		return []key.Binding{m.keys.Up, m.keys.Down, m.keys.Enter, m.keys.Next, m.keys.Prev,
+		return []key.Binding{m.keys.Up, m.keys.Down, m.keys.Enter, m.keys.SeekBack, m.keys.Next, m.keys.Prev,
 			m.keys.ModeCycle, m.keys.Queue, m.keys.Theme, m.keys.VolumeUp, m.keys.Refresh, m.keys.Detach, m.keys.Quit}
 	case pageSongs:
 		enter := m.keys.Enter
 		enter.SetHelp("enter", "播放")
-		return []key.Binding{m.keys.Up, m.keys.Down, enter, m.keys.Toggle, m.keys.PlayNext,
+		return []key.Binding{m.keys.Up, m.keys.Down, enter, m.keys.Toggle, m.keys.SeekBack, m.keys.PlayNext,
 			m.keys.Next, m.keys.Prev, m.keys.ModeCycle, m.keys.Queue, m.keys.Theme, m.keys.VolumeUp, m.keys.Back, m.keys.Detach, m.keys.Quit}
 	default:
 		return []key.Binding{m.keys.Detach, m.keys.Quit}
@@ -467,6 +473,12 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case key.Matches(msg, m.keys.VolumeDown):
 			_ = m.srv.Send(ipc.TVolumeDelta, ipc.VolumeCmd{Delta: -m.volumeStep})
+			return m, nil
+		case key.Matches(msg, m.keys.SeekBack):
+			_ = m.srv.Send(ipc.TSeek, ipc.SeekCmd{OffsetMs: -int64(m.seekStep) * 1000})
+			return m, nil
+		case key.Matches(msg, m.keys.SeekFwd):
+			_ = m.srv.Send(ipc.TSeek, ipc.SeekCmd{OffsetMs: int64(m.seekStep) * 1000})
 			return m, nil
 		}
 	}

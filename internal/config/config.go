@@ -27,6 +27,8 @@ type Config struct {
 	Volume *int `json:"volume,omitempty"`
 	// VolumeStep 音量调节步进百分比；<=0 或 >100 时使用默认值 5。
 	VolumeStep int `json:"volume_step,omitempty"`
+	// SeekStep 按 ←/→ 快退快进的步进秒数；<1 或 >60 时使用默认值 5。
+	SeekStep int `json:"seek_step,omitempty"`
 	// LyricTranslation 歌词是否包含翻译；缺失时默认 true。
 	LyricTranslation *bool `json:"lyric_translation,omitempty"`
 	// LyricLines 歌词显示总行数；<1 或 >15 时使用默认值 5。
@@ -50,6 +52,8 @@ type Config struct {
 const (
 	defaultVolume         = 100
 	defaultVolumeStep     = 5
+	defaultSeekStep       = 5
+	maxSeekStep           = 60
 	defaultLyricLines     = 5
 	maxLyricLines         = 15
 	defaultSectionGap     = 1
@@ -70,6 +74,7 @@ func DefaultConfig() Config {
 		Quality:          "lossless",
 		Volume:           &volume,
 		VolumeStep:       defaultVolumeStep,
+		SeekStep:         defaultSeekStep,
 		LyricTranslation: &translation,
 		LyricLines:       defaultLyricLines,
 		LyricGapAbove:    &above,
@@ -95,6 +100,14 @@ func (c Config) EffectiveVolumeStep() int {
 		return defaultVolumeStep
 	}
 	return c.VolumeStep
+}
+
+// EffectiveSeekStep 返回生效的快退/快步进秒数。
+func (c Config) EffectiveSeekStep() int {
+	if c.SeekStep < 1 || c.SeekStep > maxSeekStep {
+		return defaultSeekStep
+	}
+	return c.SeekStep
 }
 
 // EffectiveLyricTranslation 返回歌词是否包含翻译。
@@ -178,6 +191,7 @@ type configHelp struct {
 	AutoPlay         string `json:"auto_play"`
 	Volume           string `json:"volume"`
 	VolumeStep       string `json:"volume_step"`
+	SeekStep         string `json:"seek_step"`
 	LyricTranslation string `json:"lyric_translation"`
 	LyricLines       string `json:"lyric_lines"`
 	LyricGapAbove    string `json:"lyric_gap_above"`
@@ -196,6 +210,7 @@ type configFileData struct {
 	AutoPlay         bool       `json:"auto_play"`
 	Volume           int        `json:"volume"`
 	VolumeStep       int        `json:"volume_step"`
+	SeekStep         int        `json:"seek_step"`
 	LyricTranslation bool       `json:"lyric_translation"`
 	LyricLines       int        `json:"lyric_lines"`
 	LyricGapAbove    int        `json:"lyric_gap_above"`
@@ -217,6 +232,7 @@ func newConfigFileData(cfg Config) configFileData {
 			AutoPlay:         "启动后是否自动继续播放上次退出时的歌曲；可选值：true、false",
 			Volume:           "播放音量百分比；整数，范围：0-100",
 			VolumeStep:       "按 +/- 调节音量时的步进百分比；整数，范围：1-100",
+			SeekStep:         "按 ←/→ 快退/快进时的步进秒数；整数，范围：1-60",
 			LyricTranslation: "歌词是否显示翻译；可选值：true、false",
 			LyricLines:       "歌词区域显示的总行数；整数，范围：1-15",
 			LyricGapAbove:    "歌词区域与上方正文区域之间的空行数；整数，范围：0-10",
@@ -230,6 +246,7 @@ func newConfigFileData(cfg Config) configFileData {
 		AutoPlay:         cfg.AutoPlay,
 		Volume:           cfg.EffectiveVolume(),
 		VolumeStep:       cfg.EffectiveVolumeStep(),
+		SeekStep:         cfg.EffectiveSeekStep(),
 		LyricTranslation: cfg.EffectiveLyricTranslation(),
 		LyricLines:       cfg.EffectiveLyricLines(),
 		LyricGapAbove:    cfg.EffectiveLyricGapAbove(),
