@@ -77,12 +77,6 @@ var retryBackoff = []time.Duration{
 	2 * time.Second, 5 * time.Second, 10 * time.Second, 20 * time.Second, 30 * time.Second,
 }
 
-// retryRestartThreshold 连续播放失败达到该次数后自我重启后端（约 2 分钟）。
-const retryRestartThreshold = 8
-
-// maxAutoRestarts 自动重启次数上限，超过后不再重启（防重启循环）。
-const maxAutoRestarts = 2
-
 // playSong 切换到指定歌曲并拉取播放地址（异步）。切歌立即生效：旧曲停止
 // 出声、当前曲切换到位并推送（loading 加载中，位置冻结在 0），界面与
 // MPRIS 所见与实际出声严格一致；地址就绪后按意图位（paused）开播，
@@ -368,11 +362,6 @@ func (s *Server) handlePlayFailure(song netease.Song, err error) {
 		s.pushNote("播放失败："+err.Error()+"；等待网络，将自动重试", true)
 	}
 	s.scheduleRetry()
-	// 连续失败达到阈值：进程内状态（TLS 会话、风控标记等）可能被污染，
-	// 自我重启清除兜底；超过重启上限则保持退避重试。
-	if s.retryAttempt >= retryRestartThreshold && restartCount() < maxAutoRestarts {
-		s.restartSelf()
-	}
 }
 
 // scheduleRetry 安排下一次自动重试，间隔按 retryBackoff 退避。

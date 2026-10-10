@@ -14,7 +14,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -181,11 +180,6 @@ func (s *Server) Run() error {
 
 	// 异步确认登录态；确认后若配置开启自动开播则恢复播放。
 	s.checkLogin(true)
-	// 自动重启后的恢复：直接继续播放当前曲目（失败会进入重试管道）。
-	if os.Getenv(resumeEnv) == "1" && s.playing != nil {
-		s.paused = false
-		s.playSong(s.playing.Song)
-	}
 	return s.loop(sigCh)
 }
 
@@ -241,62 +235,6 @@ func (s *Server) loop(sigCh chan os.Signal) error {
 		case ev := <-mprisEvents:
 			s.handleMprisEvent(ev)
 		}
-	}
-}
-
-// restartCountEnv 记录自动重启次数；resumeEnv 标记重启后自动恢复播放。
-const (
-	restartCountEnv = "MOLPE_RESTART_COUNT"
-	resumeEnv       = "MOLPE_RESUME_AFTER_RESTART"
-)
-
-func restartCount() int {
-	n, _ := strconv.Atoi(os.Getenv(restartCountEnv))
-	return n
-}
-
-// restartSelf 自我重启后端进程（exec 替换自身，PID 不变，systemd 无感知）：
-// 清除全部进程内状态（TLS 会话、风控标记、连接池等），队列与 Cookie
-// 从磁盘恢复，重启后自动恢复当前曲目的播放。用于持续网络故障的兜底恢复。
-// 前端会看到连接断开并自动重连。
-func (s *Server) restartSelf() {
-	s.pushNote("持续播放失败，正在自动重启播放服务…", true)
-	s.saveConfig()
-	s.saveQueue()
-	if s.gapTimer != nil {
-		s.gapTimer.Stop()
-	}
-	if s.retryTimer != nil {
-		s.retryTimer.Stop()
-	}
-	s.stopQRPoll()
-	if s.player != nil {
-		s.player.Close()
-		s.player = nil
-		s.playerExited = nil
-	}
-	if s.mpris != nil {
-		s.mpris.Close()
-	}
-	if s.conn != nil {
-		s.conn.Close()
-	}
-	if s.ln != nil {
-		s.ln.Close()
-		_ = os.Remove(ipc.SocketPath(s.dirs.Cache))
-	}
-	exe, err := os.Executable()
-	if err != nil {
-		s.pushNote("自动重启失败："+err.Error()+"，继续自动重试", true)
-		return
-	}
-	env := append(os.Environ(),
-		fmt.Sprintf("%s=%d", restartCountEnv, restartCount()+1),
-		resumeEnv+"=1",
-	)
-	if err := syscall.Exec(exe, append([]string{exe}, os.Args[1:]...), env); err != nil {
-		// 重启失败：保持现状继续退避重试。
-		s.pushNote("自动重启失败："+err.Error()+"，继续自动重试", true)
 	}
 }
 
