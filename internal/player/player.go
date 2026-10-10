@@ -77,20 +77,20 @@ func (p *Player) waitSocket(timeout time.Duration) error {
 	}
 }
 
-// Play 加载并播放指定的音频地址。
-func (p *Player) Play(url string) error {
-	_, err := p.command("loadfile", url)
-	return err
-}
-
-// PlayFrom 加载音频地址并从 start 位置开始播放（开播即定位，
-// 避免开播后再 seek 的二次跳转）。start <= 0 时等价于 Play。
-func (p *Player) PlayFrom(url string, start time.Duration) error {
-	if start <= 0 {
-		return p.Play(url)
+// Load 加载音频地址并开播；start > 0 时从指定位置开始（开播即定位，
+// 避免开播后再 seek 的二次跳转）；paused 为 true 时加载后保持暂停。
+// pause 必须以 loadfile 文件级选项与加载原子生效：加载后单独
+// set_property pause 会与 mpv 打开文件的过程竞争，概率性返回空错误；
+// 显式传 yes/no 也保证不受上一曲遗留的全局暂停状态影响。
+func (p *Player) Load(url string, start time.Duration, paused bool) error {
+	opts := map[string]string{"pause": "no"}
+	if paused {
+		opts["pause"] = "yes"
 	}
-	_, err := p.command("loadfile", url, "replace", 0,
-		map[string]string{"start": fmt.Sprintf("%.3f", start.Seconds())})
+	if start > 0 {
+		opts["start"] = fmt.Sprintf("%.3f", start.Seconds())
+	}
+	_, err := p.command("loadfile", url, "replace", 0, opts)
 	return err
 }
 

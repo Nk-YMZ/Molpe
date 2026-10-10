@@ -178,7 +178,9 @@ Cookie 接收均在 daemon 内进行；前端只负责把二维码 URL 渲染为
   歌单后续分区展示，当前曲目锚定窗口中央，限高滚动；delete/Ctrl+d 删除选中条目
   （删除当前曲自动跳转下一首），l/b/esc 关闭；随机模式不显示歌单后续
 - 切歌（点歌/上一首/下一首/弹窗删除当前曲）一律解除暂停自动开播；
-  后端在播放时无条件将暂停状态同步给 mpv（其 pause 属性跨 loadfile 保持，不重置）
+  开播时暂停意图以 loadfile 文件级选项（pause=yes/no）与加载原子生效——加载后单独
+  set_property pause 会与 mpv 打开文件竞争、概率性返回空错误，且不受上一曲遗留的
+  全局暂停状态影响
 
 歌词显示已实现（`internal/ui/lyrics.go`、`internal/netease/lyrics.go`）：
 

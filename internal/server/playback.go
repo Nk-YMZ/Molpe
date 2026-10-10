@@ -175,7 +175,7 @@ func (s *Server) playSong(song netease.Song) {
 	}()
 }
 
-// handleSongURL 处理播放地址获取结果：启动播放器（如需要）并播放。
+// handleSongURL 处理播放地址获取结果：启动播放器（如需要）并加载开播。
 func (s *Server) handleSongURL(r songURLResult) {
 	if r.seq != s.playSeq {
 		return // 过期响应
@@ -217,21 +217,10 @@ func (s *Server) handleSongURL(r songURLResult) {
 		}
 		s.player = p
 	}
-	var playErr error
-	if startOffset > 0 {
-		// 间隔中快进/快退产生的开播定位：加载即从目标位置开始。
-		playErr = s.player.PlayFrom(r.url.URL, startOffset)
-	} else {
-		playErr = s.player.Play(r.url.URL)
-	}
-	if playErr != nil {
-		s.handlePlayFailure(r.song, playErr)
+	// pause 意图随 loadfile 原子生效（见 player.Load），无需加载后再同步。
+	if err := s.player.Load(r.url.URL, startOffset, s.paused); err != nil {
+		s.handlePlayFailure(r.song, err)
 		return
-	}
-	// 按切歌时定下的播放意图同步暂停状态（加载中用户可能按了暂停；
-	// mpv 的 pause 属性跨 loadfile 保持，需无条件同步）。
-	if err := s.player.SetPause(s.paused); err != nil {
-		s.pushNote(err.Error(), true)
 	}
 	// 开播成功：清除可能存在的失败重试状态；此前处于重试流程时提示恢复。
 	recovered := s.retryAttempt > 0
