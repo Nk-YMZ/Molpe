@@ -148,7 +148,7 @@ func (s *Server) playSong(song netease.Song) {
 	s.playSeq++
 	seq := s.playSeq
 	s.loading = true
-	s.playing = &ipc.Playing{Song: song, Level: s.quality}
+	s.playing = &ipc.Playing{Song: song}
 	s.anchor.set(0, true) // 加载期间位置冻结
 	s.lyrics = nil
 	s.lyricsSongID = 0
@@ -408,7 +408,7 @@ func (s *Server) startGap(song netease.Song) {
 	s.gapSeq++
 	seq := s.gapSeq
 	s.gapAt = time.Now()
-	s.playing = &ipc.Playing{Song: song, Level: s.quality}
+	s.playing = &ipc.Playing{Song: song}
 	s.paused = true
 	s.anchor.set(0, true)
 	s.lyrics = nil
@@ -461,7 +461,7 @@ func (s *Server) handlePlayFailure(song netease.Song, err error) {
 	}
 	first := s.retryAttempt == 0 && s.retrySong == nil
 	s.retrySong = &song
-	s.playing = &ipc.Playing{Song: song, Level: s.quality}
+	s.playing = &ipc.Playing{Song: song}
 	s.paused = true
 	s.anchor.set(0, true)
 	s.lyrics = nil

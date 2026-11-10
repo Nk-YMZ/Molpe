@@ -66,6 +66,16 @@ internal/ui/         Bubble Tea TUI（后端的纯客户端）：根模型 + 登
 的纯客户端：交互层不持有 netease/player/queue/mpris 引用，状态来自 `ipc.State` 快照，
 操作通过 IPC 命令下发。
 
+独立播放页（`pagePlaying`）：选歌后进入，左侧为象限字符彩色专辑封面及下方滚动歌词，右侧为当前播放歌单；
+`b`/Esc 返回浏览位置，`v` 进入或离开播放页。封面下载、缩略和最多 8 张图片的内存缓存
+由前端表示层负责，按 URL 与序号丢弃过期结果；渲染代码位于 `view.go`，转换结果只在图片、
+尺寸或主题背景变化时重建。封面缩略图最大 1024×1024，显示最多 96 列，单格用双颜色最小误差
+拟合 2×2 像素结构。Kitty 图片能力由 `graphics.go` 主动协商，确认传输、Unicode 占位符
+及真彩色后用虚拟图片放置；占位符布局仍由 `view.go` 渲染，图片数据通过 `tea.Raw` 发送。
+终端确认接收前、能力不足、传输报错/超时及 tmux/screen 环境使用色块；可用
+`MOLPE_COVER_MODE=blocks` 强制色块。仅删除本前端分配的图片 ID，迟到编码和响应按 ID 丢弃。
+窄窗口回退为歌词与列表纵向布局。
+
 UI 分层约定（交互/渲染解耦）：
 
 - 交互层（`ui.go`、`list.go`、`lyrics.go`、`queue_popup.go`、`login.go`、`theme_picker.go` 等）
@@ -266,7 +276,7 @@ Cookie 接收均在 daemon 内进行；前端只负责把二维码 URL 渲染为
   会错误标注甚至混发文件，EAPI 的等级与文件均与实际一致
 - 音质从面向用户的 `$XDG_CONFIG_HOME/molpe/config.json` 读取，支持
   `standard`、`higher`、`exhigh`、`lossless`、`hires`
-- 运行期间不提供音质切换弹窗；修改配置后重新启动程序生效
+- 运行期间按 `a` 打开音质选择弹窗；后端统一保存偏好并按原进度和暂停状态重新取流，队列和历史保持稳定；手动修改配置文件后重启生效
 - 音质等级直接采用 EAPI 接口返回值（与实际文件一致），展示为当前曲目的实际音质
 - 完全退出（`q` 或 `systemctl --user stop molpe`）时后端关闭 mpv 子进程并清理 IPC socket
 

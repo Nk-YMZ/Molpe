@@ -157,7 +157,7 @@ func (s *Server) restoreQueue() {
 		s.queue.Restore(st)
 	}
 	if cur, ok := s.queue.Current(); ok {
-		s.playing = &ipc.Playing{Song: cur, Level: s.quality}
+		s.playing = &ipc.Playing{Song: cur}
 		s.paused = true
 		s.anchor.set(0, true)
 	}
@@ -179,10 +179,23 @@ func (s *Server) saveConfig() {
 
 // Run 启动 IPC 监听并进入事件循环，直到收到 shutdown 命令或终止信号。
 func (s *Server) Run() error {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
 	sock := ipc.SocketPath(s.dirs.Cache)
 	if err := os.MkdirAll(filepath.Dir(sock), 0o700); err != nil {
 		return fmt.Errorf("创建 socket 目录失败: %w", err)
 	}
+	lock, err := os.OpenFile(sock+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return fmt.Errorf("打开后端锁失败: %w", err)
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return fmt.Errorf("播放后端已在运行或无法取得锁: %w", err)
+	}
+	// 保留锁文件本身，避免删除后另一进程锁住不同 inode。
 	_ = os.Remove(sock) // 清理上次异常退出残留的 socket 文件
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
@@ -190,10 +203,6 @@ func (s *Server) Run() error {
 	}
 	s.ln = ln
 	go s.acceptLoop()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	defer signal.Stop(sigCh)
 
 	// 异步确认登录态；确认后若配置开启自动开播则恢复播放。
 	s.checkLogin(true)
@@ -358,16 +367,17 @@ func (s *Server) reply(id int, t ipc.Type, payload any) {
 func (s *Server) state() ipc.State {
 	pos, _ := s.anchor.get()
 	st := ipc.State{
-		Checked:  s.checked,
-		Account:  s.account,
-		Playing:  s.playing,
-		Paused:   s.paused,
-		Pos:      pos,
-		Volume:   s.volume,
-		Quality:  s.quality,
-		Queue:    s.queue.Snapshot(),
-		NetRetry: s.retrySong != nil,
-		Loading:  s.loading,
+		Checked:          s.checked,
+		Account:          s.account,
+		Playing:          s.playing,
+		Paused:           s.paused,
+		Pos:              pos,
+		Volume:           s.volume,
+		Quality:          s.quality,
+		QualitySelection: true,
+		Queue:            s.queue.Snapshot(),
+		NetRetry:         s.retrySong != nil,
+		Loading:          s.loading,
 	}
 	if s.qr != nil {
 		st.QR = &ipc.QRStatus{URL: s.qr.URL, Code: s.qrCode}

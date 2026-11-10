@@ -46,6 +46,7 @@ const (
 	TRemove       Type = "remove"        // 从队列删除条目（RemoveCmd）
 	TRefresh      Type = "refresh"       // 全局刷新：后端重新对齐所有状态（无载荷）
 	TSetTheme     Type = "set_theme"     // 同步主题选择（ThemeCmd）
+	TSetQuality   Type = "set_quality"   // 切换音质偏好（QualityCmd）
 	TShutdown     Type = "shutdown"      // 完全退出：停止播放并结束后端
 )
 
@@ -71,18 +72,19 @@ type QRStatus struct {
 
 // State 是服务端播放状态的全量快照，hello 握手与每次变化时推送。
 type State struct {
-	Checked  bool             `json:"checked"`           // 登录态是否已确认（未确认时前端显示检查中）
-	Account  *netease.Account `json:"account,omitempty"` // 当前登录账号，未登录为 nil
-	QR       *QRStatus        `json:"qr,omitempty"`      // 进行中的二维码会话，无为 nil
-	Playing  *Playing         `json:"playing,omitempty"`
-	Paused   bool             `json:"paused"`
-	Pos      float64          `json:"pos"`                 // 推送时刻的播放位置锚点（秒），前端据此本地外推
-	GapLeft  float64          `json:"gap_left,omitempty"`  // 歌曲间隔剩余秒数，>0 表示间隔中（下一首待播）
-	NetRetry bool             `json:"net_retry,omitempty"` // 播放失败，等待网络恢复自动重试中
-	Loading  bool             `json:"loading,omitempty"`   // 播放地址拉取中（无音频出声，位置冻结）
-	Volume   int              `json:"volume"`              // 音量百分比（0-100）
-	Quality  string           `json:"quality"`             // 配置的音质偏好
-	Queue    queue.State      `json:"queue"`               // 队列快照（含模式）
+	Checked          bool             `json:"checked"`           // 登录态是否已确认（未确认时前端显示检查中）
+	Account          *netease.Account `json:"account,omitempty"` // 当前登录账号，未登录为 nil
+	QR               *QRStatus        `json:"qr,omitempty"`      // 进行中的二维码会话，无为 nil
+	Playing          *Playing         `json:"playing,omitempty"`
+	Paused           bool             `json:"paused"`
+	Pos              float64          `json:"pos"`                         // 推送时刻的播放位置锚点（秒），前端据此本地外推
+	GapLeft          float64          `json:"gap_left,omitempty"`          // 歌曲间隔剩余秒数，>0 表示间隔中（下一首待播）
+	NetRetry         bool             `json:"net_retry,omitempty"`         // 播放失败，等待网络恢复自动重试中
+	Loading          bool             `json:"loading,omitempty"`           // 播放地址拉取中（无音频出声，位置冻结）
+	Volume           int              `json:"volume"`                      // 音量百分比（0-100）
+	Quality          string           `json:"quality"`                     // 配置的音质偏好
+	QualitySelection bool             `json:"quality_selection,omitempty"` // 后端支持运行时音质选择
+	Queue            queue.State      `json:"queue"`                       // 队列快照（含模式）
 }
 
 // Note 是服务端发给前端的一次性提示；Err 为 true 时按错误展示。
@@ -155,6 +157,11 @@ type GetSongsCmd struct {
 // ThemeCmd 同步前端选择的主题名（由后端随配置统一落盘）。
 type ThemeCmd struct {
 	Name string `json:"name"`
+}
+
+// QualityCmd 由后端校验并持久化音质偏好，重新加载当前歌曲。
+type QualityCmd struct {
+	Quality string `json:"quality"`
 }
 
 // Encode 将消息以 JSON Lines 写入 w。

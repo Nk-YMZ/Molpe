@@ -28,6 +28,7 @@ const (
 	pageLogin                 // 二维码登录
 	pagePlaylists             // 歌单列表
 	pageSongs                 // 歌单内歌曲
+	pagePlaying               // 封面、歌词与当前播放歌单
 )
 
 type keyMap struct {
@@ -50,6 +51,8 @@ type keyMap struct {
 	Queue      key.Binding // 播放队列弹窗
 	Delete     key.Binding // 弹窗内删除选中曲目
 	Theme      key.Binding // 主题选择弹窗
+	Quality    key.Binding // 音质选择弹窗
+	Player     key.Binding // 当前播放页
 	Detach     key.Binding // 转入后台：关闭界面，后端继续播放
 	Quit       key.Binding
 }
@@ -76,6 +79,8 @@ func defaultKeyMap() keyMap {
 		Queue:      key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "队列")),
 		Delete:     key.NewBinding(key.WithKeys("delete", "ctrl+d"), key.WithHelp("del", "删除")),
 		Theme:      key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "主题")),
+		Quality:    key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "音质")),
+		Player:     key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "播放页")),
 		Detach:     key.NewBinding(key.WithKeys("Q"), key.WithHelp("Q", "后台")),
 		Quit:       key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "退出")),
 	}
@@ -91,12 +96,17 @@ type Model struct {
 	sty       styles
 	keys      keyMap
 
-	page      page
-	login     loginModel
-	playlists playlistsPage
-	songs     songsPage
-	popup     queuePopup  // 播放队列弹窗
-	picker    themePicker // 主题选择弹窗
+	page         page
+	login        loginModel
+	playlists    playlistsPage
+	songs        songsPage
+	popup        queuePopup    // 播放队列弹窗
+	picker       themePicker   // 主题选择弹窗
+	quality      qualityPicker // 音质选择弹窗
+	cover        coverModel
+	graphics     graphicsModel
+	playerReturn page
+	playerList   listModel
 
 	st   ipc.State // 最新服务端状态快照
 	stAt time.Time // 快照接收时刻（播放位置本地外推的基准）
@@ -147,6 +157,7 @@ func New(client *ipc.Client, st ipc.State, cfg config.Config, dirs config.Dirs, 
 	}
 	m := Model{
 		srv:              client,
+		graphics:         newGraphicsModel(),
 		dirs:             dirs,
 		lyricLines:       cfg.EffectiveLyricLines(),
 		lyricGapAbove:    cfg.EffectiveLyricGapAbove(),
@@ -179,31 +190,43 @@ func (m Model) ServerGone() bool { return m.serverGone }
 func (m Model) ShortHelp() []key.Binding {
 	switch m.page {
 	case pageLogin:
-		return []key.Binding{m.keys.Refresh, m.keys.Detach, m.keys.Quit}
+		return []key.Binding{m.keys.Quality, m.keys.Refresh, m.keys.Detach, m.keys.Quit}
 	case pagePlaylists:
-		return []key.Binding{m.keys.Up, m.keys.Down, m.keys.Enter, m.keys.SeekBack, m.keys.Next, m.keys.Prev,
+		return []key.Binding{m.keys.Up, m.keys.Down, m.keys.Enter, m.keys.Player, m.keys.Quality, m.keys.SeekBack, m.keys.Next, m.keys.Prev,
 			m.keys.ModeCycle, m.keys.Queue, m.keys.Theme, m.keys.VolumeUp, m.keys.Refresh, m.keys.Detach, m.keys.Quit}
 	case pageSongs:
 		enter := m.keys.Enter
 		enter.SetHelp("enter", "播放")
-		return []key.Binding{m.keys.Up, m.keys.Down, enter, m.keys.Toggle, m.keys.SeekBack, m.keys.PlayNext,
+		return []key.Binding{m.keys.Up, m.keys.Down, enter, m.keys.Player, m.keys.Toggle, m.keys.Quality, m.keys.SeekBack, m.keys.PlayNext,
 			m.keys.Next, m.keys.Prev, m.keys.ModeCycle, m.keys.Queue, m.keys.Theme, m.keys.VolumeUp, m.keys.Back, m.keys.Detach, m.keys.Quit}
+	case pagePlaying:
+		enter := m.keys.Enter
+		enter.SetHelp("enter", "播放")
+		return []key.Binding{m.keys.Up, m.keys.Down, enter, m.keys.Toggle, m.keys.SeekBack, m.keys.PlayNext, m.keys.Next, m.keys.Prev, m.keys.Quality, m.keys.Queue, m.keys.Theme, m.keys.VolumeUp, m.keys.Back, m.keys.Detach, m.keys.Quit}
 	default:
 		return []key.Binding{m.keys.Detach, m.keys.Quit}
 	}
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(listenServerCmd(m.srv), m.initCmd)
+	return tea.Batch(listenServerCmd(m.srv), m.initCmd, m.graphics.init())
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.update(msg)
+	model := next.(Model)
+	graphicsCmd := model.syncGraphics()
+	return model, tea.Batch(cmd, graphicsCmd)
+}
+
+func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 		m.playlists.list.SetHeight(m.listHeight(0))
 		m.songs.list.SetHeight(m.listHeight(2))
+		m.playerList.SetHeight(playingLayout(m.width, m.playerHeight(), m.lyricLines).listHeight)
 		if m.popup.open {
 			m.popup.height = max(5, min(queuePopupMaxRows, m.height-6))
 			m.popup.ensureVisible()
@@ -211,7 +234,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.picker.open {
 			m.picker.list.SetHeight(themePickerHeight(m.height))
 		}
-		return m, nil
+		if m.quality.open {
+			m.quality.list.SetHeight(qualityPickerHeight(m.height))
+		}
+		return m, m.syncCover()
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	case serverEventMsg:
@@ -230,7 +256,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case reconnectFailedMsg:
 		m.reconnecting = false
 		m.serverGone = true
-		return m, tea.Quit
+		cmd := m.quitGraphics()
+		return m, cmd
 	case playlistsFetchedMsg:
 		m.playlists.loading = false
 		m.playlists.err = msg.err
@@ -270,6 +297,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, fetchSongsCmd(m.srv, msg.playlistID)
 	case lyricsMsg:
 		return m.handleLyrics(msg)
+	case coverLoadedMsg:
+		if msg.url == m.cover.url && msg.seq == m.cover.seq {
+			m.cover.image, m.cover.loading, m.cover.failed = msg.image, false, msg.err != nil
+			m.cover.art = ""
+			m.refreshCoverArt()
+		}
+		return m, nil
 	case lyricTickMsg:
 		if msg.seq != m.lyricSeq {
 			return m, nil // 过期定时器（暂停/切歌后残留）
@@ -311,7 +345,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.login.frame++
 		return m, m.scheduleLoginTick()
 	}
-	return m, nil
+	return m.handleGraphics(msg)
 }
 
 // handleServerEvent 处理后端推送的事件，并重新挂起事件监听。
@@ -352,6 +386,9 @@ func (m *Model) applyState(st ipc.State) tea.Cmd {
 		case st.Account != nil && (m.page == pageChecking || m.page == pageLogin):
 			m.page = pagePlaylists
 			cmds = append(cmds, m.fetchPlaylists())
+			if st.Playing != nil {
+				cmds = append(cmds, m.openPlayer())
+			}
 		case st.Account == nil && m.page == pageChecking:
 			// 二维码会话由后端在确认未登录后自动创建（含过期重建）。
 			m.page = pageLogin
@@ -372,6 +409,7 @@ func (m *Model) applyState(st ipc.State) tea.Cmd {
 		curID = st.Playing.Song.ID
 	}
 	trackChanged := curID != prevID
+	m.syncPlayerList(prev.Queue.Songs, trackChanged)
 	if trackChanged {
 		m.errNote = ""
 		m.note = ""
@@ -420,10 +458,40 @@ func (m *Model) applyState(st ipc.State) tea.Cmd {
 			m.popup.ensureVisible()
 		}
 	}
+	if m.page == pagePlaying && st.Playing == nil && prev.Playing != nil {
+		m.closePlayer()
+	}
+	cmds = append(cmds, m.syncCover())
 	return tea.Batch(cmds...)
 }
 
+// syncPlayerList 保留用户选中项；切歌时跟随当前曲目，删除或换歌单时按歌曲 ID 校正。
+func (m *Model) syncPlayerList(previous []netease.Song, trackChanged bool) {
+	selectedID := int64(-1)
+	if i := m.playerList.Selected(); i >= 0 && i < len(previous) {
+		selectedID = previous[i].ID
+	}
+	if trackChanged && m.st.Playing != nil {
+		selectedID = m.st.Playing.Song.ID
+	}
+	items := make([]string, len(m.st.Queue.Songs))
+	cursor := m.playerList.cursor
+	for i, song := range m.st.Queue.Songs {
+		items[i] = song.Name
+		if song.ID == selectedID {
+			cursor = i
+		}
+	}
+	// 直接替换条目以保留滚动位置，SetItems 会将光标和偏移重置。
+	m.playerList.items = items
+	m.playerList.SetHeight(playingLayout(m.width, m.playerHeight(), m.lyricLines).listHeight)
+	m.playerList.SetCursor(cursor)
+}
+
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if m.quality.open {
+		return m.updateQualityPicker(msg)
+	}
 	// 弹窗打开时按键全部由弹窗处理（主题选择弹窗优先）。
 	if m.picker.open {
 		return m.updatePicker(msg)
@@ -441,6 +509,13 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if key.Matches(msg, m.keys.Refresh) {
 		return m, m.globalRefresh()
 	}
+	if key.Matches(msg, m.keys.Quality) {
+		if !m.st.QualitySelection {
+			return m, m.setNote("后端版本较旧，请按 q 完全退出并重新打开 Molpe", true)
+		}
+		m.openQualityPicker()
+		return m, nil
+	}
 
 	if key.Matches(msg, m.keys.Toggle) && m.st.Playing != nil {
 		_ = m.srv.Send(ipc.TToggle, nil)
@@ -450,6 +525,15 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// 队列与音量控制在非登录页全局可用。
 	if m.page != pageLogin {
 		switch {
+		case key.Matches(msg, m.keys.Player):
+			if m.page == pagePlaying {
+				m.closePlayer()
+				return m, nil
+			}
+			if m.st.Playing == nil {
+				return m, m.setNote("当前没有正在播放的曲目", false)
+			}
+			return m, m.openPlayer()
 		case key.Matches(msg, m.keys.Queue):
 			if m.st.Playing == nil {
 				return m, m.setNote("当前没有正在播放的曲目", false)
@@ -484,6 +568,30 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch m.page {
+	case pagePlaying:
+		switch {
+		case key.Matches(msg, m.keys.Up):
+			m.playerList.Move(-1)
+		case key.Matches(msg, m.keys.Down):
+			m.playerList.Move(1)
+		case key.Matches(msg, m.keys.Top):
+			m.playerList.GoTop()
+		case key.Matches(msg, m.keys.Bottom):
+			m.playerList.GoBottom()
+		case key.Matches(msg, m.keys.Enter), key.Matches(msg, m.keys.PlayNext):
+			i := m.playerList.Selected()
+			if i < 0 || i >= len(m.st.Queue.Songs) {
+				return m, nil
+			}
+			song := m.st.Queue.Songs[i]
+			if key.Matches(msg, m.keys.PlayNext) {
+				_ = m.srv.Send(ipc.TPlayNext, ipc.PlayNextCmd{Song: song})
+			} else if err := m.srv.Send(ipc.TPlaySong, ipc.PlaySongCmd{Playlist: m.st.Queue.Songs, Song: song}); err != nil {
+				return m, m.setNote("播放失败："+err.Error(), true)
+			}
+		case key.Matches(msg, m.keys.Back):
+			m.closePlayer()
+		}
 	case pagePlaylists:
 		switch {
 		case key.Matches(msg, m.keys.Up):
@@ -521,8 +629,10 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if i < 0 || i >= len(m.songs.data) {
 				return m, nil
 			}
-			_ = m.srv.Send(ipc.TPlaySong, ipc.PlaySongCmd{Playlist: m.songs.data, Song: m.songs.data[i]})
-			return m, nil
+			if err := m.srv.Send(ipc.TPlaySong, ipc.PlaySongCmd{Playlist: m.songs.data, Song: m.songs.data[i]}); err != nil {
+				return m, m.setNote("播放失败："+err.Error(), true)
+			}
+			return m, m.openPlayer()
 		case key.Matches(msg, m.keys.PlayNext):
 			i := m.songs.list.Selected()
 			if i < 0 || i >= len(m.songs.data) {
@@ -541,9 +651,11 @@ func (m Model) quitKey(msg tea.KeyPressMsg) (nm Model, cmd tea.Cmd, ok bool) {
 	switch {
 	case key.Matches(msg, m.keys.Quit):
 		_ = m.srv.Send(ipc.TShutdown, nil)
-		return m, tea.Quit, true
+		cmd = m.quitGraphics()
+		return m, cmd, true
 	case key.Matches(msg, m.keys.Detach):
-		return m, tea.Quit, true
+		cmd = m.quitGraphics()
+		return m, cmd, true
 	}
 	return m, nil, false
 }
@@ -580,6 +692,8 @@ func (m Model) listHeight(extra int) int {
 func (m *Model) globalRefresh() tea.Cmd {
 	_ = m.srv.Send(ipc.TRefresh, nil)
 	var cmds []tea.Cmd
+	m.cover.failed = false
+	cmds = append(cmds, m.syncCover())
 	if c := m.fetchPlaylists(); c != nil {
 		cmds = append(cmds, c)
 	}
@@ -652,6 +766,31 @@ func (m Model) buildViewState() viewState {
 		s.body = m.playlistsBody()
 	case pageSongs:
 		s.body = m.songsBody()
+	case pagePlaying:
+		s.body = bodyView{kind: bodyPlaying}
+		if m.st.Playing != nil {
+			song := m.st.Playing.Song
+			status := "暂无专辑封面"
+			if m.cover.loading {
+				status = "正在加载封面…"
+			} else if m.cover.failed {
+				status = "封面加载失败，按 r 重试"
+			}
+			art := m.cover.art
+			if m.graphics.ready {
+				art = renderGraphicsPlaceholder(m.graphics.id, m.graphics.width, m.graphics.height)
+			}
+			s.player = &playerView{art: art, coverStatus: status, title: song.Name, artist: song.Artists, album: song.Album}
+			items := songItems(m.st.Queue.Songs)
+			for i, queued := range m.st.Queue.Songs {
+				if queued.ID == song.ID {
+					items[i].marker = strings.TrimSpace(m.theme.Glyphs.Playing)
+					items[i].current = true
+				}
+			}
+			l := m.playerList
+			s.player.list = listView{items: items, cursor: l.cursor, offset: l.offset, height: l.height}
+		}
 	}
 
 	s.status = m.statusState()
@@ -666,6 +805,27 @@ func (m Model) buildViewState() viewState {
 			items[i] = listItemView{primary: name}
 		}
 		s.picker = &listView{items: items, cursor: l.cursor, offset: l.offset, height: l.height}
+	}
+	if m.quality.open {
+		l := m.quality.list
+		items := make([]listItemView, len(m.quality.levels))
+		for i, level := range m.quality.levels {
+			items[i].primary = qualityLabel(level)
+			if level == m.st.Quality {
+				items[i].right = "当前偏好"
+			}
+		}
+		actual := "播放后显示实际音质"
+		if m.st.Loading {
+			actual = "正在加载所选音质…"
+		}
+		if m.st.Playing != nil && !m.st.Loading && m.st.Playing.Level != "" {
+			actual = "当前歌曲实际音质：" + qualityLabel(m.st.Playing.Level)
+		}
+		s.quality = &qualityPickerView{
+			list:   listView{items: items, cursor: l.cursor, offset: l.offset, height: l.height},
+			actual: actual,
+		}
 	}
 	return s
 }

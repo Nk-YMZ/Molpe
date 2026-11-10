@@ -42,8 +42,9 @@ func (m *Model) openThemePicker() {
 			break
 		}
 	}
-	// 两个弹窗互斥。
+	// 选择弹窗与队列弹窗互斥。
 	m.popup.open = false
+	m.quality.open = false
 	m.picker.open = true
 }
 
@@ -85,6 +86,7 @@ func (m *Model) applyTheme(name string) tea.Cmd {
 	m.theme = t
 	m.themeName = name
 	m.sty = newStyles(t)
+	m.refreshCoverArt()
 	_ = m.srv.Send(ipc.TSetTheme, ipc.ThemeCmd{Name: name})
 	return m.setNote("已切换主题："+name, false)
 }
