@@ -15,7 +15,7 @@ type qualityPicker struct {
 }
 
 func qualityPickerHeight(height int) int {
-	return max(1, min(len(netease.QualityLevels()), height-9))
+	return max(1, min(len(netease.QualityLevels()), height-10))
 }
 
 func (m *Model) openQualityPicker() {

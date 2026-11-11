@@ -149,8 +149,8 @@ func TestGraphicsLifecycle(t *testing.T) {
 	if cmd == nil || m.graphics.ready {
 		t.Fatal("传输后必须等待终端确认")
 	}
-	if strings.ContainsRune(m.buildViewState().player.art, kitty.Placeholder) {
-		t.Fatal("确认前应继续显示色块")
+	if m.buildViewState().player.art != "" {
+		t.Fatal("原生图片确认前应显示加载提示，避免闪过色块")
 	}
 	next, _ = m.Update(graphicsReply(firstID, "OK"))
 	m = next.(Model)
@@ -178,21 +178,29 @@ func TestGraphicsLifecycle(t *testing.T) {
 		t.Fatal("迟到响应只清理本前端旧图片")
 	}
 	m.graphics.ready = true
+	retainedID := m.graphics.id
 	next, _ = m.Update(qualityKey('t'))
 	m = next.(Model)
-	if !m.picker.open || m.graphics.id != 0 || m.graphics.ready {
-		t.Fatalf("弹窗必须清除图片 open=%v id=%d ready=%v err=%s", m.picker.open, m.graphics.id, m.graphics.ready, m.errNote)
+	if !m.picker.open || m.graphics.id != retainedID || !m.graphics.ready {
+		t.Fatal("弹窗应保留虚拟图片供关闭后复用")
 	}
-	next, _ = m.Update(qualityKey(tea.KeyEscape))
+	if strings.ContainsRune(renderRoot(m.buildViewState(), testStyles()), kitty.Placeholder) {
+		t.Fatal("弹窗画面不能显示图片占位符")
+	}
+	next, cmd = m.Update(qualityKey(tea.KeyEscape))
 	m = next.(Model)
-	if m.graphics.id == 0 {
-		t.Fatal("关闭弹窗应恢复原生图片准备")
+	if m.graphics.id != retainedID || !m.graphics.ready || cmd != nil {
+		t.Fatal("关闭弹窗应立即复用已确认图片")
 	}
 	next, _ = m.Update(qualityKey('b'))
 	m = next.(Model)
-	if m.page == pagePlaying || m.graphics.id != 0 {
-		t.Fatal("返回浏览应清除图片")
+	if m.page == pagePlaying || m.graphics.id != retainedID {
+		t.Fatal("浏览页应隐藏占位符并保留可复用图片")
 	}
+	if strings.ContainsRune(renderRoot(m.buildViewState(), testStyles()), kitty.Placeholder) {
+		t.Fatal("浏览页不能显示图片")
+	}
+
 }
 
 func TestGraphicsFallback(t *testing.T) {

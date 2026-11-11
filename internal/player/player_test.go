@@ -1,8 +1,11 @@
 package player
 
 import (
+	"encoding/json"
+	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -123,5 +126,38 @@ func TestLoadPauseAndStart(t *testing.T) {
 	pos4, _ := p.Position()
 	if pos4-pos3 < 0.2 {
 		t.Fatalf("pause=no 应覆盖遗留的全局暂停并前进: %.2f -> %.2f", pos3, pos4)
+	}
+}
+
+func TestCommandSkipsEvents(t *testing.T) {
+	root, err := os.MkdirTemp("/tmp", "molpe-command-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(root)
+	socket := filepath.Join(root, "s")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var command map[string]any
+		if json.NewDecoder(conn).Decode(&command) != nil {
+			return
+		}
+		encoder := json.NewEncoder(conn)
+		_ = encoder.Encode(map[string]any{"event": "playback-restart"})
+		_ = encoder.Encode(map[string]any{"error": "success", "data": 5.0})
+	}()
+	p := &Player{socket: socket}
+	pos, err := p.Position()
+	if err != nil || pos != 5 {
+		t.Fatalf("事件不能截断命令响应: %.2f %v", pos, err)
 	}
 }

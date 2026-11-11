@@ -14,6 +14,7 @@ import (
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/colorprofile"
 
 	"molpe/internal/config"
 	"molpe/internal/ipc"
@@ -300,6 +301,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case coverLoadedMsg:
 		if msg.url == m.cover.url && msg.seq == m.cover.seq {
 			m.cover.image, m.cover.loading, m.cover.failed = msg.image, false, msg.err != nil
+			m.cover.errorText = ""
+			if msg.err != nil {
+				m.cover.errorText = msg.err.Error()
+			}
 			m.cover.art = ""
 			m.refreshCoverArt()
 		}
@@ -445,8 +450,9 @@ func (m *Model) applyState(st ipc.State) tea.Cmd {
 		cmds = append(cmds, m.scheduleRevealTick())
 	}
 	if trackChanged || prev.Paused != st.Paused || prev.Loading != st.Loading {
-		cmds = append(cmds, m.scheduleProgressTick(), m.scheduleLyricTick())
+		cmds = append(cmds, m.scheduleProgressTick())
 	}
+	cmds = append(cmds, m.resetLyricTick())
 
 	// 队列弹窗随状态刷新；播放停止时关闭。
 	if m.popup.open {
@@ -774,11 +780,16 @@ func (m Model) buildViewState() viewState {
 			if m.cover.loading {
 				status = "正在加载封面…"
 			} else if m.cover.failed {
-				status = "封面加载失败，按 r 重试"
+				status = "封面加载失败\n" + m.cover.errorText + "\n按 r 重试"
 			}
 			art := m.cover.art
 			if m.graphics.ready {
 				art = renderGraphicsPlaceholder(m.graphics.id, m.graphics.width, m.graphics.height)
+			} else if m.graphics.allowed && !m.graphics.failed && m.graphics.profile == colorprofile.TrueColor {
+				art = ""
+				if m.cover.image != nil {
+					status = "正在显示封面…"
+				}
 			}
 			s.player = &playerView{art: art, coverStatus: status, title: song.Name, artist: song.Artists, album: song.Album}
 			items := songItems(m.st.Queue.Songs)
@@ -819,12 +830,20 @@ func (m Model) buildViewState() viewState {
 		if m.st.Loading {
 			actual = "正在加载所选音质…"
 		}
-		if m.st.Playing != nil && !m.st.Loading && m.st.Playing.Level != "" {
-			actual = "当前歌曲实际音质：" + qualityLabel(m.st.Playing.Level)
+		details := ""
+		if m.st.Playing != nil && !m.st.Loading && playingLevel(m.st.Playing) != "" {
+			actual = "当前歌曲实际音质：" + qualityLabel(playingLevel(m.st.Playing))
+			if m.st.Playing.SampleRate > 0 {
+				details = fmt.Sprintf("解码 %s · %g kHz · %s", m.st.Playing.Codec, float64(m.st.Playing.SampleRate)/1000, m.st.Playing.SampleFormat)
+			}
+			if m.st.Playing.DecodedLevel != "" && m.st.Playing.DecodedLevel != m.st.Playing.Level {
+				actual += "（接口标记" + qualityLabel(m.st.Playing.Level) + "）"
+			}
 		}
 		s.quality = &qualityPickerView{
-			list:   listView{items: items, cursor: l.cursor, offset: l.offset, height: l.height},
-			actual: actual,
+			list:    listView{items: items, cursor: l.cursor, offset: l.offset, height: l.height},
+			actual:  actual,
+			details: details,
 		}
 	}
 	return s
@@ -869,8 +888,8 @@ func (m Model) songsBody() bodyView {
 // 音质显示当前曲目的实际等级，未播放时显示配置的偏好音质。
 func (m Model) headerRight() string {
 	q := m.st.Quality
-	if m.st.Playing != nil && m.st.Playing.Level != "" {
-		q = m.st.Playing.Level
+	if m.st.Playing != nil && playingLevel(m.st.Playing) != "" {
+		q = playingLevel(m.st.Playing)
 	}
 	return strings.Join([]string{
 		modeLabel(m.st.Queue.Mode),
@@ -994,4 +1013,11 @@ func songItems(songs []netease.Song) []listItemView {
 		}
 	}
 	return items
+}
+
+func playingLevel(playing *ipc.Playing) string {
+	if playing.DecodedLevel != "" {
+		return playing.DecodedLevel
+	}
+	return playing.Level
 }

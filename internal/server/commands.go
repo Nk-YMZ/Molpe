@@ -230,6 +230,8 @@ func (s *Server) handleResult(res any) {
 		s.gapExpired(r.seq)
 	case retryResult:
 		s.handleRetry(r)
+	case playerPlaybackResult:
+		s.handlePlaybackUpdate(r)
 	case playerErrorResult:
 		s.handlePlayerError()
 	case mprisSeekResult:

@@ -2,10 +2,12 @@ package server
 
 import (
 	"slices"
+	"strings"
 	"time"
 
 	"molpe/internal/config"
 	"molpe/internal/netease"
+	"molpe/internal/player"
 )
 
 // setQuality 先保存偏好，再按原进度和暂停意图重新取流；队列与历史不变。
@@ -47,4 +49,31 @@ func (s *Server) setQuality(quality string) {
 	s.playSong(song)
 	s.startOffset, s.startOffsetSeq = offset, s.playSeq
 	s.pushNote("音质已切换，正在重新加载当前歌曲", false)
+}
+
+// decodedQuality 用已知无损编码和解码格式校正标签，原始接口等级单独保留。
+// 高精度整数/浮点解码与至少 48 kHz 合并判断；有损编码的浮点输出沿用接口等级。
+func decodedQuality(info player.AudioInfo) string {
+	codec := strings.ToLower(info.Codec)
+	switch codec {
+	case "flac", "alac", "wavpack", "ape", "tta":
+	default:
+		if !strings.HasPrefix(codec, "pcm_") {
+			return ""
+		}
+	}
+	format := strings.TrimSuffix(info.Format, "p")
+	switch format {
+	case "s32", "s64", "float", "double":
+		if info.SampleRate >= 48000 {
+			return "hires"
+		}
+	case "s16", "u8":
+	default:
+		return ""
+	}
+	if info.SampleRate > 0 {
+		return "lossless"
+	}
+	return ""
 }

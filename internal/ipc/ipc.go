@@ -59,8 +59,12 @@ type Message struct {
 
 // Playing 是当前曲目及其实际音质。
 type Playing struct {
-	Song  netease.Song `json:"song"`
-	Level string       `json:"level"` // 实际音质（EAPI 返回值）
+	Song         netease.Song `json:"song"`
+	Level        string       `json:"level"`                   // EAPI 返回值
+	DecodedLevel string       `json:"decoded_level,omitempty"` // 根据无损编码和解码参数校正的等级
+	Codec        string       `json:"codec,omitempty"`
+	SampleFormat string       `json:"sample_format,omitempty"`
+	SampleRate   int          `json:"sample_rate,omitempty"`
 }
 
 // QRStatus 是进行中的二维码登录会话状态；Code 为网易云状态码

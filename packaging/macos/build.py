@@ -149,7 +149,7 @@ def main():
         "CFBundleExecutable": "Molpe",
         "CFBundlePackageType": "APPL",
         "CFBundleShortVersionString": "1.3.0",
-        "CFBundleVersion": "13006",
+        "CFBundleVersion": "13007",
         "CFBundleIconFile": "Molpe.icns",
         "LSMinimumSystemVersion": "26.0",
         "LSUIElement": True,
@@ -197,7 +197,7 @@ def main():
         "本包采用本机临时签名，尚未经过 Apple Developer ID 签名和公证。\n"
         "系统若阻止打开，请在确认文件来源后使用“系统设置 → 隐私与安全性 → 仍要打开”。\n"
         "第三方组件许可证位于应用包内 Contents/Resources/Licenses。\n", encoding="utf-8")
-    dmg = output / "Molpe-1.3.0-mac.6-arm64.dmg"
+    dmg = output / "Molpe-1.3.0-mac.7-arm64.dmg"
     with tempfile.TemporaryDirectory(prefix="molpe-dmg-", dir=output) as temporary:
         staging = Path(temporary)
         shutil.copytree(app, staging / app.name, symlinks=True)

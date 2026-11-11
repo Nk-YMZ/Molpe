@@ -51,6 +51,7 @@ type Server struct {
 	mpris        *mpris.Service  // nil 表示桌面集成不可用
 	mprisErr     error
 
+	playURL string       // 当前成功提交给 mpv 的来源，用于丢弃旧流参数
 	playing *ipc.Playing // 当前曲目与实际音质，nil 表示无
 	paused  bool         // 用户期望的播放状态（true 为暂停/待播）
 	loading bool         // 播放地址拉取中（切歌已生效、开播或失败收敛前）；期间无音频出声，位置冻结

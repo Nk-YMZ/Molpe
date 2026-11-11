@@ -2,7 +2,6 @@
 package player
 
 import (
-	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,9 +19,9 @@ type Player struct {
 	socket string
 	exited chan struct{} // mpv 进程退出时关闭
 
-	mu         sync.Mutex
-	closed     bool
-	endWatched bool
+	mu            sync.Mutex
+	closed        bool
+	eventsWatched bool
 }
 
 // Start 启动 mpv 子进程并等待 IPC socket 就绪。
@@ -131,30 +130,58 @@ func (p *Player) Exited() <-chan struct{} {
 // （网络中断、CDN 不可达等，用于接入失败重试）；主动操作产生的
 // stop/redirect 等事件不上报。回调在独立 goroutine 中触发；重复调用仅首次生效。
 func (p *Player) SetEndCallback(cb func(reason string)) {
-	p.mu.Lock()
-	if p.closed || p.endWatched {
-		p.mu.Unlock()
-		return
-	}
-	p.endWatched = true
-	p.mu.Unlock()
-	go p.watchEnd(cb)
+	p.SetEventCallback(func(event, reason string) {
+		if event == "end-file" && cb != nil {
+			cb(reason)
+		}
+	})
 }
 
-// watchEnd 持有独立的 IPC 长连接监听 end-file 事件；
-// socket 关闭或 mpv 退出时 goroutine 自动结束。
-func (p *Player) watchEnd(cb func(reason string)) {
-	conn, err := net.Dial("unix", p.socket)
+// SetEventCallback 监听结束、加载完成和跳转恢复事件。注册完成后才允许后续 Load，
+// 避免短文件在监听连接建立前已经加载完成。重复调用仅首次生效。
+func (p *Player) SetEventCallback(cb func(event, reason string)) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed || p.eventsWatched {
+		return
+	}
+	conn, err := net.DialTimeout("unix", p.socket, 2*time.Second)
 	if err != nil {
 		return
 	}
-	defer conn.Close()
-	if err := json.NewEncoder(conn).Encode(map[string]any{
-		"command": []any{"enable_event", "end-file"},
-	}); err != nil {
-		return
-	}
+	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
 	dec := json.NewDecoder(conn)
+	commands := [][]string{{"disable_event", "all"}, {"enable_event", "end-file"}, {"enable_event", "file-loaded"}, {"enable_event", "playback-restart"}}
+	for _, command := range commands {
+		if err = json.NewEncoder(conn).Encode(map[string]any{"command": command}); err != nil {
+			conn.Close()
+			return
+		}
+		for {
+			var response struct {
+				Error string `json:"error"`
+			}
+			if err = dec.Decode(&response); err != nil {
+				conn.Close()
+				return
+			}
+			if response.Error == "" {
+				continue
+			}
+			if response.Error != "success" {
+				conn.Close()
+				return
+			}
+			break
+		}
+	}
+	_ = conn.SetDeadline(time.Time{})
+	p.eventsWatched = true
+	go p.watchEvents(conn, dec, cb)
+}
+
+func (p *Player) watchEvents(conn net.Conn, dec *json.Decoder, cb func(event, reason string)) {
+	defer conn.Close()
 	for {
 		var ev struct {
 			Event  string `json:"event"`
@@ -163,15 +190,56 @@ func (p *Player) watchEnd(cb func(reason string)) {
 		if err := dec.Decode(&ev); err != nil {
 			return
 		}
-		// 仅上报自然播完与流播放失败；手动切歌/停止产生的
-		// stop/redirect 等事件不触发连播或重试。
-		if ev.Event == "end-file" && cb != nil {
-			switch ev.Reason {
-			case "eof", "error":
-				cb(ev.Reason)
+		switch ev.Event {
+		case "end-file":
+			if cb != nil && (ev.Reason == "eof" || ev.Reason == "error") {
+				cb(ev.Event, ev.Reason)
+			}
+		case "file-loaded", "playback-restart":
+			if cb != nil {
+				cb(ev.Event, "")
 			}
 		}
 	}
+}
+
+// AudioInfo 包含源路径和解码器输出，Format 保留 mpv 的样本格式（如 s32）。
+// s32 是解码存储格式，24-bit FLAC 也可能使用该格式。
+type AudioInfo struct {
+	Source     string
+	Codec      string
+	Format     string `json:"format"`
+	SampleRate int    `json:"samplerate"`
+}
+
+// AudioInfo 在同一命令锁内读取来源和解码参数，切歌期间的结果由调用者核对来源。
+func (p *Player) AudioInfo() (AudioInfo, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var info AudioInfo
+	path, err := p.lockedCommand("get_property", "path")
+	if err != nil {
+		return info, err
+	}
+	if err = json.Unmarshal(path, &info.Source); err != nil {
+		return info, err
+	}
+	data, err := p.lockedCommand("get_property", "audio-params")
+	if err != nil {
+		return info, err
+	}
+	if err = json.Unmarshal(data, &info); err != nil {
+		return info, err
+	}
+	if info.SampleRate <= 0 || info.Format == "" {
+		return info, errors.New("解码参数尚未就绪")
+	}
+	codec, err := p.lockedCommand("get_property", "audio-codec-name")
+	if err != nil {
+		return info, err
+	}
+	err = json.Unmarshal(codec, &info.Codec)
+	return info, err
 }
 
 func (p *Player) command(args ...any) (json.RawMessage, error) {
@@ -197,21 +265,24 @@ func (p *Player) lockedCommand(args ...any) (json.RawMessage, error) {
 		return nil, fmt.Errorf("发送 mpv 命令失败: %w", err)
 	}
 
-	line, err := bufio.NewReader(conn).ReadBytes('\n')
-	if err != nil {
-		return nil, fmt.Errorf("读取 mpv 响应失败: %w", err)
+	dec := json.NewDecoder(conn)
+	for {
+		var resp struct {
+			Error string          `json:"error"`
+			Data  json.RawMessage `json:"data"`
+		}
+		if err := dec.Decode(&resp); err != nil {
+			return nil, fmt.Errorf("读取 mpv 响应失败: %w", err)
+		}
+		// mpv 可以先推送加载或跳转事件，命令响应由 error 字段标识。
+		if resp.Error == "" {
+			continue
+		}
+		if resp.Error != "success" {
+			return nil, fmt.Errorf("mpv 命令失败: %s", resp.Error)
+		}
+		return resp.Data, nil
 	}
-	var resp struct {
-		Error string          `json:"error"`
-		Data  json.RawMessage `json:"data"`
-	}
-	if err := json.Unmarshal(line, &resp); err != nil {
-		return nil, fmt.Errorf("解析 mpv 响应失败: %w", err)
-	}
-	if resp.Error != "success" {
-		return nil, fmt.Errorf("mpv 命令失败: %s", resp.Error)
-	}
-	return resp.Data, nil
 }
 
 // Position 返回当前播放位置（秒）。

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	_ "image/gif"
@@ -21,6 +22,21 @@ import (
 
 const maxCoverBytes = 8 << 20
 
+func coverRequestURL(address string) (*url.URL, error) {
+	u, err := url.Parse(address)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		return nil, errors.New("无效封面地址")
+	}
+	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	if host == "music.126.net" || strings.HasSuffix(host, ".music.126.net") {
+		u.Scheme = "https"
+		query := u.Query()
+		query.Set("param", "1024y1024")
+		u.RawQuery = query.Encode()
+	}
+	return u, nil
+}
+
 type coverCache struct {
 	mu     sync.Mutex
 	images map[string]image.Image
@@ -34,12 +50,9 @@ func (c *coverCache) load(ctx context.Context, address string) (image.Image, err
 	if img != nil {
 		return img, nil
 	}
-	u, err := url.Parse(address)
-	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
-		return nil, errors.New("无效封面地址")
-	}
-	if u.Scheme == "http" && strings.HasSuffix(u.Hostname(), ".music.126.net") {
-		u.Scheme = "https"
+	u, err := coverRequestURL(address)
+	if err != nil {
+		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
@@ -48,22 +61,29 @@ func (c *coverCache) load(ctx context.Context, address string) (image.Image, err
 	req.Header.Set("Referer", "https://music.163.com/")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, err
+		var requestErr *url.Error
+		if errors.As(err, &requestErr) {
+			err = requestErr.Err
+		}
+		return nil, fmt.Errorf("下载封面失败: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || resp.ContentLength > maxCoverBytes {
-		return nil, errors.New("封面响应不可用")
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("封面服务器返回 HTTP %d", resp.StatusCode)
+	}
+	if resp.ContentLength > maxCoverBytes {
+		return nil, fmt.Errorf("封面超过 8 MiB 下载上限（%d 字节）", resp.ContentLength)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxCoverBytes+1))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("读取封面失败: %w", err)
 	}
 	if len(data) > maxCoverBytes {
-		return nil, errors.New("封面文件过大")
+		return nil, errors.New("封面超过 8 MiB 下载上限")
 	}
 	img, err = decodeCover(data)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("解码封面失败: %w", err)
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -132,6 +152,7 @@ type coverModel struct {
 	width, height   int
 	background      string
 	loading, failed bool
+	errorText       string
 	seq             int
 	cancel          context.CancelFunc
 	cache           *coverCache
@@ -156,6 +177,7 @@ func (m *Model) syncCover() tea.Cmd {
 		m.cover.seq++
 		m.cover.url, m.cover.image, m.cover.art = address, nil, ""
 		m.cover.loading, m.cover.failed = false, false
+		m.cover.errorText = ""
 	}
 	if m.page != pagePlaying {
 		return nil

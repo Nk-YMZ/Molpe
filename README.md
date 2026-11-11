@@ -47,7 +47,7 @@ go build -o molpe .
 
 ### macOS（本地测试包）
 
-测试包适用于 Apple Silicon 与 macOS 26，构建产物为 `dist/macos-native-cover/Molpe-1.3.0-mac.6-arm64.dmg`。
+测试包适用于 Apple Silicon 与 macOS 26，构建产物为 `dist/macos-review-fixes/Molpe-1.3.0-mac.7-arm64.dmg`。
 打开镜像后把 `Molpe.app` 拖入 Applications，再双击应用进入终端播放器。
 包内包含 mpv 及所需动态库，后端会按需启动。`q` 完全退出，`Q` 保留后台播放。
 配置与登录数据存放在 `~/Library/Application Support/Molpe`，缓存位于 `~/Library/Caches/Molpe`。
@@ -58,7 +58,7 @@ go build -o molpe .
 在仓库根目录执行以下命令。
 
 ```sh
-python3 packaging/macos/build.py --go "$(command -v go)" --output dist/macos-native-cover
+python3 packaging/macos/build.py --go "$(command -v go)" --output dist/macos-review-fixes
 ```
 
 可用 `--sdk` 指定本机可用的其他 SDK，最低部署目标为 macOS 26。
@@ -87,12 +87,13 @@ python3 packaging/macos/build.py --go "$(command -v go)" --output dist/macos-nat
 选歌后自动进入独立播放页，左侧显示自适应专辑封面，下方显示滚动歌词，右侧显示当前播放歌单。
 封面按窗口空间自适应，最多使用 96 列。色块模式每格以双颜色拟合 2×2 图像结构。
 `b` / `esc` 返回此前的歌单浏览位置，`v` 再次进入播放页。窄窗口将歌词和列表纵向排列，
-放大后自动恢复封面。右侧用 `j/k` 或方向键选曲，回车播放，`n` 加入下一首播放，
+放大后自动恢复封面。关闭弹窗时复用已确认的终端图片。右侧用 `j/k` 或方向键选曲，回车播放，`n` 加入下一首播放，
 播放标记与选择光标分别显示。加载失败时显示占位提示，可按 `r` 重试。
 
 封面默认自动协商。实际查询确认 Kitty 图片传输、Unicode 图片占位符和真彩色支持后，
 以 PNG 原生显示封面。Kitty 0.28+ 和 Ghostty 1.x 可用实际版本响应补足旧版能力查询。
-未确认能力、传输报错或超时时使用现有色块。tmux/screen 和强制兼容模式使用色块。
+原生图片等待确认时显示加载提示，能力不足、传输报错或超时时使用色块。tmux/screen 和强制兼容模式使用色块。
+网易云 CDN 请求附带 `param=1024y1024`，封面加载失败时显示具体原因。
 内存封面最大 1024×1024，最多缓存 8 张，图片通过终端直接传输，仅驻留内存。
 在 Kitty/Ghostty 中可运行 `/Applications/Molpe.app/Contents/Resources/Player.command`。
 双击 Molpe.app 使用系统 Terminal。需要强制色块时，在启动命令前设置 `MOLPE_COVER_MODE=blocks`。
@@ -105,6 +106,10 @@ python3 packaging/macos/build.py --go "$(command -v go)" --output dist/macos-nat
 - `random_no_repeat`：随机播放回避最近 N 首
 - `song_gap`：相邻两曲之间的静默间隔
 - `theme`：主题名
+
+音质显示会结合 mpv 的无损编码、解码格式和采样率校正，弹窗同时保留接口标记与解码参数。
+高精度解码格式配合至少 48 kHz 时显示 Hi-Res。`s32` 保留 mpv 的格式名称。
+歌词在跳转快照到达时立即校位，并在 mpv 恢复播放时使用实际位置重新对齐。
 
 改完重启生效。
 

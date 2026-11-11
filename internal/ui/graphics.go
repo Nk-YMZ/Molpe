@@ -105,8 +105,14 @@ func (m *Model) quitGraphics() tea.Cmd {
 func (m *Model) syncGraphics() tea.Cmd {
 	g := &m.graphics
 	layout := playingLayout(m.width, m.playerHeight(), m.lyricLines)
-	visible := m.page == pagePlaying && !m.popup.open && !m.picker.open && !m.quality.open && m.cover.image != nil && layout.coverWidth > 0
-	if !g.supported() || !visible {
+	if !g.supported() {
+		return g.clear()
+	}
+	// 虚拟图片随占位符隐藏，弹窗和浏览页期间保留已确认的图片以供恢复。
+	if m.page != pagePlaying || m.popup.open || m.picker.open || m.quality.open {
+		return nil
+	}
+	if m.cover.image == nil || layout.coverWidth == 0 {
 		return g.clear()
 	}
 	if g.id != 0 && g.url == m.cover.url && g.width == layout.coverWidth && g.height == layout.coverHeight {

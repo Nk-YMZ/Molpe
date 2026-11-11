@@ -99,3 +99,18 @@ func TestQualityRender(t *testing.T) {
 		}
 	}
 }
+
+func TestDecodedQualityDisplay(t *testing.T) {
+	m := Model{st: ipc.State{Quality: "hires", Playing: &ipc.Playing{Level: "lossless", DecodedLevel: "hires", Codec: "flac", SampleRate: 48000, SampleFormat: "s32"}}, keys: defaultKeyMap(), width: 80, height: 30}
+	if !strings.Contains(m.headerRight(), "Hi-Res") {
+		t.Fatal("头部应使用校正后的等级")
+	}
+	m.openQualityPicker()
+	view := m.buildViewState().quality
+	screen := strip(renderQualityPicker(*view, testStyles(), m.width, m.height))
+	for _, part := range []string{"Hi-Res", "接口标记无损", "flac", "48 kHz", "s32"} {
+		if !strings.Contains(screen, part) {
+			t.Fatalf("缺少实际音质详情 %s", part)
+		}
+	}
+}

@@ -118,8 +118,9 @@ type popupView struct {
 }
 
 type qualityPickerView struct {
-	list   listView
-	actual string
+	list    listView
+	actual  string
+	details string
 }
 
 type playerView struct {
@@ -704,7 +705,7 @@ func renderPlayer(s viewState, sty styles, height int) string {
 	}
 	art := p.art
 	if art == "" {
-		art = lipgloss.Place(layout.coverWidth, layout.coverHeight, lipgloss.Center, lipgloss.Center, sty.Faint.Render(ansi.Truncate(p.coverStatus, layout.coverWidth, "")))
+		art = lipgloss.Place(layout.coverWidth, layout.coverHeight, lipgloss.Center, lipgloss.Center, sty.Faint.Render(ansi.Hardwrap(p.coverStatus, layout.coverWidth, true)))
 	}
 	art = lipgloss.PlaceHorizontal(layout.leftWidth, lipgloss.Center, art)
 	left := strings.Join([]string{art, "", text(p.title, sty.Title, layout.leftWidth), text(p.artist, sty.Muted, layout.leftWidth), text(p.album, sty.Faint, layout.leftWidth), "", lyrics}, "\n")
@@ -799,6 +800,7 @@ func renderQualityPicker(p qualityPickerView, sty styles, width, height int) str
 		renderList(p.list, sty, w),
 		"",
 		sty.Muted.Render(ansi.Truncate(p.actual, w, "")),
+		sty.Muted.Render(ansi.Truncate(p.details, w, "")),
 		sty.Faint.Render(ansi.Truncate("可用音质取决于歌曲资源与账号权限", w, "")),
 		ansi.Truncate(hint, w, ""),
 	)

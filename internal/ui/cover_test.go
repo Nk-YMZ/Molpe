@@ -4,12 +4,15 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"image"
 	"image/color"
 	"image/png"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -353,5 +356,66 @@ func TestPlayerListCommands(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatal("未收到播放列表命令")
 		}
+	}
+}
+
+func TestCoverCDNRequest(t *testing.T) {
+	for _, address := range []string{"http://p1.music.126.net/a.jpg?token=public&param=4000y4000", "https://music.126.net/a.jpg?token=public"} {
+		u, err := coverRequestURL(address)
+		if err != nil || u.Scheme != "https" || u.Query().Get("param") != "1024y1024" || u.Query().Get("token") != "public" {
+			t.Fatalf("CDN 缩略图参数不符 %v %v", u, err)
+		}
+	}
+	external := "https://music.126.net.example.org/a.jpg?param=10y10"
+	u, err := coverRequestURL(external)
+	if err != nil || u.String() != external {
+		t.Fatal("外部图片源应使用原 URL")
+	}
+	var data bytes.Buffer
+	_ = png.Encode(&data, coverFixture())
+	original := http.DefaultClient
+	defer func() { http.DefaultClient = original }()
+	http.DefaultClient = &http.Client{Transport: coverTransport(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Query().Get("param") != "1024y1024" {
+			t.Fatal("请求必须在下载前携带缩略参数")
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(data.Bytes())), ContentLength: int64(data.Len()), Header: make(http.Header)}, nil
+	})}
+	if _, err := (&coverCache{}).load(context.Background(), "https://p1.music.126.net/large.jpg"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type coverTransport func(*http.Request) (*http.Response, error)
+
+func (transport coverTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	return transport(r)
+}
+
+func TestCoverFailureDetails(t *testing.T) {
+	original := http.DefaultClient
+	defer func() { http.DefaultClient = original }()
+	for _, code := range []int{403, 500} {
+		http.DefaultClient = &http.Client{Transport: coverTransport(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: code, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
+		})}
+		_, err := (&coverCache{}).load(context.Background(), "https://p1.music.126.net/a.jpg")
+		if err == nil || !strings.Contains(err.Error(), "HTTP") {
+			t.Fatal("应透传 HTTP 失败原因")
+		}
+	}
+	http.DefaultClient = &http.Client{Transport: coverTransport(func(r *http.Request) (*http.Response, error) { return nil, context.DeadlineExceeded })}
+	_, err := (&coverCache{}).load(context.Background(), "https://p1.music.126.net/a.jpg?secret=hidden")
+	var urlErr *url.Error
+	if err == nil || !errors.Is(err, context.DeadlineExceeded) || errors.As(err, &urlErr) || strings.Contains(err.Error(), "hidden") {
+		t.Fatal("网络错误应保留原因并省略完整请求地址")
+	}
+	m := Model{page: pagePlaying, theme: DefaultTheme(), keys: defaultKeyMap(), width: 146, height: 41, lyricLines: 5, lyricGapBelow: 1, playbackGapBelow: 1}
+	m.st.Playing = &ipc.Playing{Song: netease.Song{ID: 1}}
+	next, _ := m.Update(coverLoadedMsg{url: "", seq: 0, err: errors.New("封面服务器返回 HTTP 403")})
+	m = next.(Model)
+	screen := strip(renderRoot(m.buildViewState(), testStyles()))
+	if !strings.Contains(screen, "HTTP 403") || !strings.Contains(screen, "按 r 重试") {
+		t.Fatal("播放页应显示可读失败原因和重试入口")
 	}
 }
