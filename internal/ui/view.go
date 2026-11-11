@@ -2,11 +2,14 @@ package ui
 
 import (
 	"fmt"
+	"image"
+	"image/color"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/charmbracelet/x/ansi/kitty"
 )
 
 // 渲染层：唯一允许使用 lipgloss 的地方（theme.go 除外）。
@@ -33,6 +36,7 @@ const chromeFixed = 6
 type listItemView struct {
 	index     string // 序号（右对齐，微光），可为空
 	marker    string // 前置标记（如歌单的创建/收藏符号），可为空
+	current   bool   // 当前播放曲目的标记独立高亮
 	primary   string // 主文本（歌名、歌单名）
 	secondary string // 次文本（艺术家），弱化显示，可为空
 	right     string // 右列（时长、曲目数），微光显示，可为空
@@ -49,9 +53,10 @@ type listView struct {
 type bodyKind int
 
 const (
-	bodyList   bodyKind = iota // 列表正文
-	bodyNotice                 // 加载/错误等提示
-	bodyLogin                  // 登录页（二维码）
+	bodyList    bodyKind = iota // 列表正文
+	bodyNotice                  // 加载/错误等提示
+	bodyLogin                   // 登录页（二维码）
+	bodyPlaying                 // 独立播放页
 )
 
 // bodyView 正文区快照：title 非空时先渲染标题行（歌曲页）。
@@ -112,6 +117,19 @@ type popupView struct {
 	height int
 }
 
+type qualityPickerView struct {
+	list    listView
+	actual  string
+	details string
+}
+
+type playerView struct {
+	art                  string
+	coverStatus          string
+	title, artist, album string
+	list                 listView
+}
+
 // viewState 一帧界面的纯数据快照。
 type viewState struct {
 	width  int
@@ -119,7 +137,8 @@ type viewState struct {
 
 	headerRight string // 头部右侧的次要信息（模式 · 音质 · 音量）
 
-	body bodyView
+	body   bodyView
+	player *playerView
 
 	lyrics           []string // 歌词原文（未截断）
 	lyricCur         int      // 当前歌词行下标，-1 表示尚未到第一句
@@ -131,8 +150,9 @@ type viewState struct {
 	progress progressView
 	status   statusView
 
-	popup  *popupView // 队列弹窗，nil 表示关闭
-	picker *listView  // 主题选择弹窗，nil 表示关闭
+	popup   *popupView         // 队列弹窗，nil 表示关闭
+	picker  *listView          // 主题选择弹窗，nil 表示关闭
+	quality *qualityPickerView // 音质选择弹窗，nil 表示关闭
 
 	helpBindings []key.Binding
 }
@@ -141,6 +161,8 @@ type viewState struct {
 func renderRoot(s viewState, sty styles) string {
 	content := renderContent(s, sty)
 	switch {
+	case s.quality != nil:
+		content = renderQualityPicker(*s.quality, sty, s.width, s.height)
 	case s.popup != nil:
 		content = renderQueuePopup(*s.popup, sty, s.width, s.height)
 	case s.picker != nil:
@@ -152,23 +174,37 @@ func renderRoot(s viewState, sty styles) string {
 func renderContent(s viewState, sty styles) string {
 	// 栅格固定：正文区高度 = 总高 - chromeFixed - 歌词行数 - 各区块间距，
 	// 底部区块（歌词/进度/状态/帮助）锚定在屏幕底部，不随正文内容多少浮动。
-	bodyH := max(1, s.height-chromeFixed-s.lyricLines-s.gapAbove-s.gapBelow-s.playbackGapBelow)
+	lyricHeight, gapAbove := s.lyricLines, s.gapAbove
+	if s.body.kind == bodyPlaying {
+		lyricHeight, gapAbove = 0, 0
+	}
+	bodyH := max(1, s.height-chromeFixed-lyricHeight-gapAbove-s.gapBelow-s.playbackGapBelow)
+	body := renderBody(s.body, sty, s.width, bodyH)
+	if s.body.kind == bodyPlaying {
+		body = renderPlayer(s, sty, bodyH)
+	}
 	blocks := []string{
 		renderHeader(s.width, s.headerRight, sty),
 		renderRule(s.width, sty),
 		"",
-		renderBody(s.body, sty, s.width, bodyH),
+		body,
 	}
-	for range s.gapAbove {
+	for range gapAbove {
 		blocks = append(blocks, "")
 	}
-	blocks = append(blocks, renderLyrics(s.lyrics, s.lyricCur, s.lyricLines, s.width, sty))
+	if s.body.kind != bodyPlaying {
+		blocks = append(blocks, renderLyrics(s.lyrics, s.lyricCur, s.lyricLines, s.width, sty))
+	}
 	for range s.gapBelow {
 		blocks = append(blocks, "")
 	}
+	status := renderStatus(s.status, sty)
+	if s.body.kind == bodyPlaying {
+		status = ansi.Truncate(status, max(1, s.width), "")
+	}
 	blocks = append(blocks,
 		renderProgress(s.progress, s.width, sty),
-		renderStatus(s.status, sty),
+		status,
 	)
 	for range s.playbackGapBelow {
 		blocks = append(blocks, "")
@@ -419,7 +455,11 @@ func renderList(l listView, sty styles, width int) string {
 			b.WriteString(sty.Faint.Render(padLeft(it.index, g.indexW) + " "))
 		}
 		if g.markerW > 0 {
-			b.WriteString(sty.Faint.Render(padRight(it.marker, g.markerW) + " "))
+			markerStyle := sty.Faint
+			if it.current {
+				markerStyle = sty.Accent2
+			}
+			b.WriteString(markerStyle.Render(padRight(it.marker, g.markerW) + " "))
 		}
 		b.WriteString(mainStyle.Render(padRight(ansi.Truncate(it.primary, g.nameW, "…"), g.nameW)))
 		if g.artistW > 0 {
@@ -544,6 +584,135 @@ func renderLyrics(lines []string, cur, n, width int, sty styles) string {
 	return strings.Join(out, "\n")
 }
 
+type playerGeometry struct {
+	coverWidth, coverHeight int
+	leftWidth, listWidth    int
+	lyricHeight, listHeight int
+}
+
+func playingLayout(width, height, lyricLines int) playerGeometry {
+	w := max(1, min(200, width-4))
+	if width < 58 || height < 16 {
+		lyrics := max(1, min(lyricLines, height-5))
+		return playerGeometry{
+			leftWidth: max(1, width), listWidth: max(1, width),
+			lyricHeight: lyrics, listHeight: max(1, height-lyrics-4),
+		}
+	}
+	// 为封面至少保留四行，歌词配置较大时按可用高度收拢。
+	lyrics := max(1, min(lyricLines, height-10))
+	leftWidth := min(96, (w-6)/2)
+	coverWidth := min(leftWidth, (height-lyrics-6)*2)
+	coverWidth -= coverWidth % 2
+	return playerGeometry{
+		coverWidth: coverWidth, coverHeight: coverWidth / 2,
+		leftWidth: leftWidth, listWidth: w - leftWidth - 6,
+		lyricHeight: lyrics, listHeight: max(1, height-2),
+	}
+}
+
+// 每格从 2×2 采样中选择误差最小的双颜色象限组合。
+// 位顺序为左上、右上、左下、右下；互补的掩码交换前景和背景即可表示。
+var coverQuadrants = [16]string{" ", "▘", "▝", "▀", "▖", "▌", "▞", "▛", "▗", "▚", "▐", "▜", "▄", "▙", "▟", "█"}
+
+func fitCoverCell(pixels [4]color.RGBA) (foreground, background color.RGBA, glyph string) {
+	bestError := int(^uint(0) >> 1)
+	// 水平分割优先，保证纯色和上下分区的输出稳定。
+	for _, mask := range [...]int{3, 1, 2, 4, 5, 6, 7} {
+		var sums [2][3]int
+		var counts [2]int
+		for i, pixel := range pixels {
+			group := (mask >> i) & 1
+			sums[group][0] += int(pixel.R)
+			sums[group][1] += int(pixel.G)
+			sums[group][2] += int(pixel.B)
+			counts[group]++
+		}
+		var colors [2]color.RGBA
+		for group := range colors {
+			colors[group] = color.RGBA{
+				R: uint8((sums[group][0] + counts[group]/2) / counts[group]),
+				G: uint8((sums[group][1] + counts[group]/2) / counts[group]),
+				B: uint8((sums[group][2] + counts[group]/2) / counts[group]),
+				A: 255,
+			}
+		}
+		errorSum := 0
+		for i, pixel := range pixels {
+			candidate := colors[(mask>>i)&1]
+			red, green, blue := int(pixel.R)-int(candidate.R), int(pixel.G)-int(candidate.G), int(pixel.B)-int(candidate.B)
+			errorSum += red*red + green*green + blue*blue
+		}
+		if errorSum < bestError {
+			bestError = errorSum
+			foreground, background, glyph = colors[1], colors[0], coverQuadrants[mask]
+		}
+	}
+	return
+}
+
+// renderCoverImage 用象限字符在每格内表达 2×2 图像结构。
+// 结果在交互层缓存，歌词或进度刷新不会重新转换封面。
+func renderCoverImage(img image.Image, width, height int, background color.Color) string {
+	if img == nil || img.Bounds().Empty() || width < 1 || height < 1 {
+		return ""
+	}
+	pixels := resizeCover(img, img.Bounds(), width*2, height*2)
+	br, bg, bb, _ := background.RGBA()
+	blend := func(p color.RGBA) color.RGBA {
+		alpha := uint32(255 - p.A)
+		return color.RGBA{uint8(uint32(p.R) + (br>>8)*alpha/255), uint8(uint32(p.G) + (bg>>8)*alpha/255), uint8(uint32(p.B) + (bb>>8)*alpha/255), 255}
+	}
+	var out strings.Builder
+	for y := range height {
+		for x := range width {
+			cell := [4]color.RGBA{
+				blend(pixels.RGBAAt(x*2, y*2)),
+				blend(pixels.RGBAAt(x*2+1, y*2)),
+				blend(pixels.RGBAAt(x*2, y*2+1)),
+				blend(pixels.RGBAAt(x*2+1, y*2+1)),
+			}
+			foreground, background, glyph := fitCoverCell(cell)
+			fmt.Fprintf(&out, "\x1b[38;2;%d;%d;%dm\x1b[48;2;%d;%d;%dm%s", foreground.R, foreground.G, foreground.B, background.R, background.G, background.B, glyph)
+		}
+		out.WriteString("\x1b[0m")
+		if y < height-1 {
+			out.WriteByte('\n')
+		}
+	}
+	return out.String()
+}
+
+func renderPlayer(s viewState, sty styles, height int) string {
+	if s.player == nil {
+		return fixHeight(centerLine(sty.Muted.Render("正在加载歌曲…"), s.width), height)
+	}
+	p := s.player
+	layout := playingLayout(s.width, height, s.lyricLines)
+	lyrics := renderLyrics(s.lyrics, s.lyricCur, layout.lyricHeight, layout.leftWidth, sty)
+	if len(s.lyrics) == 0 {
+		lyrics = centerLine(sty.Muted.Render("暂无歌词"), layout.leftWidth)
+	}
+	lyrics = fixHeight(lyrics, layout.lyricHeight)
+	text := func(value string, style lipgloss.Style, width int) string {
+		return centerLine(style.Render(ansi.Truncate(value, max(1, width), "")), width)
+	}
+	list := p.list
+	list.height = layout.listHeight
+	playlist := renderBody(bodyView{kind: bodyList, title: "播放列表", titleNote: fmt.Sprintf("%d 首", len(list.items)), list: list}, sty, layout.listWidth, layout.listHeight+2)
+	if layout.coverWidth == 0 {
+		return fixHeight(strings.Join([]string{text(p.title+" - "+p.artist, sty.Title, s.width), lyrics, "", playlist}, "\n"), height)
+	}
+	art := p.art
+	if art == "" {
+		art = lipgloss.Place(layout.coverWidth, layout.coverHeight, lipgloss.Center, lipgloss.Center, sty.Faint.Render(ansi.Hardwrap(p.coverStatus, layout.coverWidth, true)))
+	}
+	art = lipgloss.PlaceHorizontal(layout.leftWidth, lipgloss.Center, art)
+	left := strings.Join([]string{art, "", text(p.title, sty.Title, layout.leftWidth), text(p.artist, sty.Muted, layout.leftWidth), text(p.album, sty.Faint, layout.leftWidth), "", lyrics}, "\n")
+	row := lipgloss.JoinHorizontal(lipgloss.Top, padHeight(left, height), "      ", playlist)
+	return fixHeight(lipgloss.Place(s.width, height, lipgloss.Center, lipgloss.Center, row), height)
+}
+
 // lyricStyle 按与当前句的距离 d（>=0）返回渐变样式：相邻句接近前景色，
 // 最远端（d == maxD）落在微光色上；渐变不可用（主题色无法解析）时
 // 回退为前景/微光两档。
@@ -622,6 +791,22 @@ func renderQueuePopup(p popupView, sty styles, width, height int) string {
 }
 
 // renderThemePicker 渲染主题选择弹窗，带字符阴影居中放置在整个屏幕上。
+func renderQualityPicker(p qualityPickerView, sty styles, width, height int) string {
+	w := max(1, min(44, width-8))
+	hint := sty.Accent2.Render("enter") + sty.Faint.Render(" 应用  ") + sty.Accent2.Render("esc") + sty.Faint.Render(" 关闭")
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		sty.Accent2.Bold(true).Render(ansi.Truncate("选择音质", w, "")),
+		sty.Faint.Render(strings.Repeat(sty.glyphs.Rule, w)),
+		renderList(p.list, sty, w),
+		"",
+		sty.Muted.Render(ansi.Truncate(p.actual, w, "")),
+		sty.Muted.Render(ansi.Truncate(p.details, w, "")),
+		sty.Faint.Render(ansi.Truncate("可用音质取决于歌曲资源与账号权限", w, "")),
+		ansi.Truncate(hint, w, ""),
+	)
+	return placeCentered(content, sty, width, height)
+}
+
 func renderThemePicker(l listView, sty styles, width, height int) string {
 	content := lipgloss.JoinVertical(lipgloss.Left,
 		sty.Accent2.Bold(true).Render("选择主题"),
@@ -659,4 +844,23 @@ func addShadow(s string, sty styles, width, height int) string {
 	}
 	bottom := strings.Repeat(" ", 2) + sty.Faint.Render(strings.Repeat("░", max(0, w-1)))
 	return strings.Join(append(lines, bottom), "\n")
+}
+
+// renderGraphicsPlaceholder 由正常字符布局定位图片，重绘、弹窗和滚动均沿用同一屏幕模型。
+func renderGraphicsPlaceholder(id, width, height int) string {
+	var out strings.Builder
+	for row := range height {
+		fmt.Fprintf(&out, "\x1b[38;2;%d;%d;%dm", (id>>16)&255, (id>>8)&255, id&255)
+		for column := range width {
+			out.WriteRune(kitty.Placeholder)
+			out.WriteRune(kitty.Diacritic(row))
+			out.WriteRune(kitty.Diacritic(column))
+			out.WriteRune(kitty.Diacritic(id >> 24))
+		}
+		out.WriteString("\x1b[39m")
+		if row < height-1 {
+			out.WriteByte('\n')
+		}
+	}
+	return out.String()
 }

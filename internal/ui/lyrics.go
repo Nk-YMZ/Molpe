@@ -25,7 +25,14 @@ func (m *Model) applyLyrics(lm ipc.LyricsMsg) tea.Cmd {
 	m.lyrics = lm.Lines
 	m.lyricSongID = lm.SongID
 	// 暂停中收到歌词也要立即定位到当前句。
+	return m.resetLyricTick()
+}
+
+// resetLyricTick 在新位置锚点或歌词到达时立即校位并作废旧时间表。
+func (m *Model) resetLyricTick() tea.Cmd {
 	m.lyricCur = lyricLineAt(m.lyrics, m.playPos())
+	m.lyricTicking = false
+	m.lyricSeq++
 	return m.scheduleLyricTick()
 }
 
@@ -38,7 +45,7 @@ func (m Model) handleLyrics(msg lyricsMsg) (tea.Model, tea.Cmd) {
 // （每句歌词只唤醒一次，避免固定频率轮询空耗电量）；暂停、无歌词、
 // 已是最后一句时不启动。已在运行时不重复启动。
 func (m *Model) scheduleLyricTick() tea.Cmd {
-	if m.lyricTicking || m.st.Paused || len(m.lyrics) == 0 {
+	if m.lyricTicking || m.st.Paused || m.st.Loading || len(m.lyrics) == 0 {
 		return nil
 	}
 	pos := m.playPos()

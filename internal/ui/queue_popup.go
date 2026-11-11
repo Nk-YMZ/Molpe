@@ -106,6 +106,7 @@ func (p *queuePopup) ensureVisible() {
 
 // openQueuePopup 打开播放队列弹窗，光标定位到当前曲目并尽量居中显示。
 func (m *Model) openQueuePopup() {
+	m.quality.open = false
 	p := &m.popup
 	p.height = max(5, min(queuePopupMaxRows, m.height-6))
 	m.buildQueueRows()

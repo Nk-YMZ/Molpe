@@ -148,7 +148,8 @@ func (s *Server) playSong(song netease.Song) {
 	s.playSeq++
 	seq := s.playSeq
 	s.loading = true
-	s.playing = &ipc.Playing{Song: song, Level: s.quality}
+	s.playURL = ""
+	s.playing = &ipc.Playing{Song: song}
 	s.anchor.set(0, true) // 加载期间位置冻结
 	s.lyrics = nil
 	s.lyricsSongID = 0
@@ -197,17 +198,23 @@ func (s *Server) handleSongURL(r songURLResult) {
 			s.handlePlayFailure(r.song, err)
 			return
 		}
-		p.SetEndCallback(func(reason string) {
-			if reason == "error" {
-				// 流播放中途失败（网络中断、CDN 不可达等）。
-				select {
-				case s.results <- playerErrorResult{}:
-				default:
+		p.SetEventCallback(func(event, reason string) {
+			if event == "end-file" {
+				if reason == "error" {
+					select {
+					case s.results <- playerErrorResult{}:
+					default:
+					}
+				} else {
+					select {
+					case s.endCh <- struct{}{}:
+					default:
+					}
 				}
 				return
 			}
 			select {
-			case s.endCh <- struct{}{}:
+			case s.results <- playerPlaybackResult{source: p}:
 			default:
 			}
 		})
@@ -222,6 +229,7 @@ func (s *Server) handleSongURL(r songURLResult) {
 		s.handlePlayFailure(r.song, err)
 		return
 	}
+	s.playURL = r.url.URL
 	// 开播成功：清除可能存在的失败重试状态；此前处于重试流程时提示恢复。
 	recovered := s.retryAttempt > 0
 	s.cancelRetry()
@@ -408,7 +416,7 @@ func (s *Server) startGap(song netease.Song) {
 	s.gapSeq++
 	seq := s.gapSeq
 	s.gapAt = time.Now()
-	s.playing = &ipc.Playing{Song: song, Level: s.quality}
+	s.playing = &ipc.Playing{Song: song}
 	s.paused = true
 	s.anchor.set(0, true)
 	s.lyrics = nil
@@ -461,7 +469,7 @@ func (s *Server) handlePlayFailure(song netease.Song, err error) {
 	}
 	first := s.retryAttempt == 0 && s.retrySong == nil
 	s.retrySong = &song
-	s.playing = &ipc.Playing{Song: song, Level: s.quality}
+	s.playing = &ipc.Playing{Song: song}
 	s.paused = true
 	s.anchor.set(0, true)
 	s.lyrics = nil
@@ -634,4 +642,23 @@ func (s *Server) handleMprisEvent(ev mpris.Event) {
 	case mpris.EventPrevious:
 		s.prevSong()
 	}
+}
+
+// playerPlaybackResult 由 mpv 加载/恢复事件触发，事件循环中查询一次当前解码参数和精确位置。
+type playerPlaybackResult struct{ source *player.Player }
+
+func (s *Server) handlePlaybackUpdate(r playerPlaybackResult) {
+	if r.source == nil || r.source != s.player || s.playing == nil || s.loading || s.retrySong != nil || s.gapSong != nil {
+		return
+	}
+	info, err := s.player.AudioInfo()
+	if err != nil || info.Source != s.playURL {
+		return
+	}
+	s.playing.DecodedLevel = decodedQuality(info)
+	s.playing.Codec, s.playing.SampleFormat, s.playing.SampleRate = info.Codec, info.Format, info.SampleRate
+	if pos, err := s.player.Position(); err == nil {
+		s.anchor.set(pos, s.paused)
+	}
+	s.pushState()
 }

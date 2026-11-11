@@ -19,7 +19,7 @@ const defaultTheme = "default"
 // Config 是面向用户的配置文件内容。
 type Config struct {
 	// Quality 音质偏好：standard / higher / exhigh / lossless / hires。
-	// 修改后重新启动程序生效。
+	// 支持界面内音质选择；手动修改配置文件后重启生效。
 	Quality string `json:"quality"`
 	// AutoPlay 启动后自动继续播放上次退出时的歌曲；默认 false（恢复为待播状态）。
 	AutoPlay bool `json:"auto_play,omitempty"`
@@ -228,7 +228,7 @@ func newConfigFileData(cfg Config) configFileData {
 	}
 	return configFileData{
 		Help: configHelp{
-			Quality:          "音质偏好；可选值：standard（标准）、higher（较高）、exhigh（极高）、lossless（无损）、hires（Hi-Res）；修改后重启生效",
+			Quality:          "音质偏好；可选值：standard（标准）、higher（较高）、exhigh（极高）、lossless（无损）、hires（Hi-Res）；界面按 a 选择立即生效并保存，手动修改文件后重启生效",
 			AutoPlay:         "启动后是否自动继续播放上次退出时的歌曲；可选值：true、false",
 			Volume:           "播放音量百分比；整数，范围：0-100",
 			VolumeStep:       "按 +/- 调节音量时的步进百分比；整数，范围：1-100",

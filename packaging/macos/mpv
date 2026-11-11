@@ -1,0 +1,5 @@
+#!/bin/bash
+set -euo pipefail
+HELPERS="$(cd "$(dirname "$0")/../../Helpers" && pwd)"
+export SSL_CERT_FILE="$HELPERS/../Resources/Certificates/cert.pem"
+exec "$HELPERS/mpv-bin" --no-config --load-scripts=no --ytdl=no --input-media-keys=no "$@"

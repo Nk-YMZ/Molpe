@@ -41,8 +41,7 @@ func runDaemon() {
 	}
 }
 
-// runTUI 连接后端并启动终端界面；后端未运行时先以 systemd --user
-// 服务形式拉起。
+// runTUI 连接后端并启动终端界面；后端未运行时按平台拉起。
 func runTUI() {
 	dirs := config.DefaultDirs()
 
@@ -77,7 +76,7 @@ func runTUI() {
 	}
 }
 
-// connect 连接后端；未运行时通过 systemd --user 拉起并等待 socket 就绪。
+// connect 连接后端；未运行时按平台拉起并等待 IPC 握手成功。
 func connect(dirs config.Dirs) (*ipc.Client, ipc.State, error) {
 	sock := ipc.SocketPath(dirs.Cache)
 	client, st, err := ipc.Dial(sock)

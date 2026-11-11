@@ -330,6 +330,38 @@ func TestSeekDuringGap(t *testing.T) {
 	}
 }
 
+// 重复启动不能删除仍在使用的 socket，已有客户端必须继续可用。
+func TestDaemonLock(t *testing.T) {
+	_, done := setupServer(t)
+	dirs := config.DefaultDirs()
+	c, _ := dial(t, dirs)
+	defer c.Close()
+
+	second, err := New(dirs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.shutdown()
+	if err := second.Run(); err == nil {
+		t.Fatal("重复后端应在监听前失败")
+	}
+	if err := c.Send(ipc.TPlayNext, ipc.PlayNextCmd{Song: netease.Song{ID: 77}}); err != nil {
+		t.Fatal(err)
+	}
+	nextEvent(t, c, ipc.TState)
+	if err := c.Send(ipc.TShutdown, nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("原后端未正常结束")
+	}
+}
+
 func TestServerLifecycle(t *testing.T) {
 	_, done := setupServer(t)
 	dirs := config.DefaultDirs()

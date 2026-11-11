@@ -88,6 +88,11 @@ func (s *Server) handleMessage(msg ipc.Message) {
 			s.cfg.Theme = c.Name
 			s.saveConfig()
 		}
+	case ipc.TSetQuality:
+		var c ipc.QualityCmd
+		if msg.DecodeData(&c) == nil {
+			s.setQuality(c.Quality)
+		}
 	case ipc.TShutdown:
 		s.shutdown()
 	}
@@ -225,6 +230,8 @@ func (s *Server) handleResult(res any) {
 		s.gapExpired(r.seq)
 	case retryResult:
 		s.handleRetry(r)
+	case playerPlaybackResult:
+		s.handlePlaybackUpdate(r)
 	case playerErrorResult:
 		s.handlePlayerError()
 	case mprisSeekResult:

@@ -1,10 +1,56 @@
 package player
 
 import (
+	"encoding/json"
+	"net"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 )
+
+// TestPlayerEnd 验证自然播完事件和关闭后的进程、socket 清理。
+func TestPlayerEnd(t *testing.T) {
+	if _, err := exec.LookPath("mpv"); err != nil {
+		t.Skip("未安装 mpv，跳过集成测试")
+	}
+	p, err := Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	ended := make(chan string, 1)
+	p.SetEndCallback(func(reason string) {
+		select {
+		case ended <- reason:
+		default:
+		}
+	})
+	if err := p.SetVolume(5); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Load("av://lavfi:sine=frequency=440:duration=1", 0, false); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case reason := <-ended:
+		if reason != "eof" {
+			t.Fatalf("自然播完应为 eof，实际为 %q", reason)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("未收到自然播完事件")
+	}
+	p.Close()
+	if _, err := os.Stat(p.socket); !os.IsNotExist(err) {
+		t.Fatalf("关闭后 socket 未清理: %v", err)
+	}
+	select {
+	case <-p.Exited():
+	default:
+		t.Fatal("关闭后 mpv 进程仍在运行")
+	}
+}
 
 // TestPlayerLifecycle 需要系统安装 mpv，属于集成测试。
 func TestPlayerLifecycle(t *testing.T) {
@@ -80,5 +126,38 @@ func TestLoadPauseAndStart(t *testing.T) {
 	pos4, _ := p.Position()
 	if pos4-pos3 < 0.2 {
 		t.Fatalf("pause=no 应覆盖遗留的全局暂停并前进: %.2f -> %.2f", pos3, pos4)
+	}
+}
+
+func TestCommandSkipsEvents(t *testing.T) {
+	root, err := os.MkdirTemp("/tmp", "molpe-command-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(root)
+	socket := filepath.Join(root, "s")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var command map[string]any
+		if json.NewDecoder(conn).Decode(&command) != nil {
+			return
+		}
+		encoder := json.NewEncoder(conn)
+		_ = encoder.Encode(map[string]any{"event": "playback-restart"})
+		_ = encoder.Encode(map[string]any{"error": "success", "data": 5.0})
+	}()
+	p := &Player{socket: socket}
+	pos, err := p.Position()
+	if err != nil || pos != 5 {
+		t.Fatalf("事件不能截断命令响应: %.2f %v", pos, err)
 	}
 }
