@@ -20,9 +20,9 @@
 
 - Go 开发
 - Bubble Tea v2 / Bubbles v2 / Lip Gloss v2 构建 TUI（注意：v2 导入路径为 `charm.land/...`，如 `charm.land/bubbletea/v2`）
-- 网易云接口加解密统一使用 `github.com/go-musicfox/netease-music` 的 `util` 包（不引入其他网易云 API）；
-  传输层不走库的 `service`/`CreateRequest`，统一由 `internal/netease/request.go` 以 req/v3
-  Chrome TLS 指纹发送（见下）
+- 网易云接口全部走 EAPI（官方客户端通道），以固定的 PC 客户端身份请求；加解密、设备身份、
+  会话与传输层由 `internal/netease` 自研（仅标准库，不引入第三方网易云 API 封装），
+  传输使用 req/v3 的 Chrome TLS 指纹（见「已知坑」）
 - mpv 负责音频播放和解码，通过 IPC（JSON IPC socket）控制
 - D-Bus/MPRIS 与桌面环境集成（预计使用 godbus/dbus 类库）
 - 统一配置文件，遵循 XDG 目录规范（`$XDG_CONFIG_HOME`、`$XDG_DATA_HOME`、`$XDG_CACHE_HOME`）
@@ -32,7 +32,7 @@
 ```
 main.go              入口：子命令分发（`molpe` TUI 前端 / `molpe daemon` 播放守护进程）+ systemd 拉起
 internal/config/     XDG 目录解析；面向用户的 config.json（音质偏好等）
-internal/netease/    网易云接口封装：Cookie 持久化、二维码登录、账号信息、歌单、播放地址
+internal/netease/    网易云接口封装（EAPI、PC 客户端身份）：登录会话与设备持久化、二维码登录、账号与续期、歌单、歌词、播放地址
 internal/player/     mpv 子进程控制（JSON IPC over unix socket）
 internal/queue/      播放队列核心逻辑（纯逻辑、可单测）
 internal/mpris/      MPRIS2 D-Bus 服务：向桌面环境暴露元数据/状态，接收媒体控制
@@ -107,14 +107,24 @@ UI 分层约定（交互/渲染解耦）：
 
 模块名为 `molpe`，远程仓库 `git@github.com:Nk-YMZ/Molpe.git`（主分支 `main`）。播放队列位于 `internal/queue`，其余模块按需新增，不提前创建。
 
-## 已知坑：网易云风控（TLS 指纹）
+## 已知坑：网易云风控与接口通道
 
-网易云接口检测 TLS 指纹，标准 Go http.Client 会被概率性拒绝/重置
-（二维码登录返回 -462；其他接口表现为传输层错误，库内记为哨兵码 520）。
-所有接口请求（含播放地址、歌单、歌词、账号、刷新登录）统一使用
-`github.com/imroc/req/v3` 的 `SetTLSFingerprintChrome()` 模拟浏览器指纹
-（`internal/netease/request.go`；参考 go-musicfox 的 `internal/ui/qr_login_client.go`）。
-获取 unikey 的请求不得携带共享 CookieJar；轮询请求需绑定共享 Jar 以接收登录 Cookie（MUSIC_U）。
+所有接口请求统一走 EAPI，由 `internal/netease` 以 req/v3 的 Chrome TLS 指纹发送
+（标准 Go http.Client 的握手特征会被概率性拒绝/重置）。以下均为实测结论，改动接口层前先看：
+
+- **设备身份必须是一套完整的真实客户端档案**：固定为 PC 客户端
+  （`os=pc`、`appver=3.1.29.205117`、`osver=Microsoft-Windows-10-Professional-build-19045-64bit`、
+  `channel=netease`）配桌面客户端 UA；设备 ID 首次生成后落盘复用（服务端按
+  「设备 ID + 系统类型」登记设备）
+- **头字段残缺的后果**：Cookie 里空值字段（如空 `appver`）排在 `MUSIC_U` 前面时，
+  interface 域名认不出登录态；版本号残缺时播放地址的 Hi-Res 被标成 `lossless`
+- **UA 与系统要配套**：`os=pc` 配手机端 UA 取播放地址返回 -460（网络环境存在风险）；
+  Linux 客户端档案取播放地址被封顶在无损
+- **二维码登录用 `type=3`**（桌面客户端；`1` 为网页端，手机会提示登录网页版）
+- **续期只有走 EAPI 才换发新的 `MUSIC_U`**（网页端续期返回 200 但不换发），新凭据必须立即落盘
+- **LinuxAPI 转发入口（`/api/linux/forward`）已下线**（各域名均 502），不要再用
+- 入口域名按 `interfacepc` → `interface3` → `interface` → `music.163.com` 顺延：单个入口
+  传输失败或返回非 JSON 时切换下一个，成功后保持使用
 
 ## 模块化与简洁性原则
 
@@ -151,10 +161,8 @@ UI 分层约定（交互/渲染解耦）：
 
 ## 已引入的依赖
 
-- `github.com/go-musicfox/netease-music` v1.6.0（网易云接口）
 - `charm.land/bubbletea/v2` v2.0.9、`charm.land/bubbles/v2` v2.2.1、`charm.land/lipgloss/v2` v2.0.6（TUI）
 - `github.com/imroc/req/v3` v3.61.0（全部网易云接口的传输层：Chrome TLS 指纹模拟）
-- `github.com/telanflow/cookiejar`（Cookie 持久化到文件，Netscape 格式）
 - `github.com/skip2/go-qrcode`（终端二维码字符画渲染）
 
 注意：Bubble Tea v2 与 v1 差异较大，如 `View() tea.View`（用 `tea.NewView` 构造）、按键消息为 `tea.KeyPressMsg`。
@@ -166,20 +174,25 @@ UI 分层约定（交互/渲染解耦）：
 ## 当前状态
 
 二维码登录已完成并可运行（二维码会话由后端持有：unikey 获取、每 2s 轮询、
-Cookie 接收均在 daemon 内进行；前端只负责把二维码 URL 渲染为字符画）：
+凭据接收均在 daemon 内进行；前端只负责把二维码 URL 渲染为字符画）：
 
-- 后端启动时检查登录态（已登录则先刷新 Cookie），前端依快照进入歌单页或登录页；
+- 后端启动时与按 `r` 时确认登录态，前端依快照进入歌单页或登录页；
   查询失败（网络错误）保留现有登录态，不误判为未登录
 - 未登录展示终端二维码（每 2s 轮询状态；800 过期 / 801 等待 / 802 待确认 / 803 成功）；
-  确认未登录且无可用会话（无会话或已过期）时后端自动重建二维码
+  确认未登录且无可用会话（无会话或已过期）时后端自动重建二维码；
+  服务端明确拒绝（如风控）时停止轮询，按 `r` 重试
 - `q`/Ctrl+C 完全退出，`Q` 转入后台
-- Cookie 持久化到 `$XDG_DATA_HOME/molpe/cookies`（0600）
+- 登录凭据与设备 ID 持久化到 `$XDG_DATA_HOME/molpe/session.json`（0600，原子写入）；
+  旧版 `cookies` 文件首次启动自动迁移后删除
+- 续期后台自动完成：已登录且距上次续期检查满 24 小时，启动或按 `r` 时调用一次续期，
+  服务端换发的新凭据立即落盘，无需重新扫码；登录态变化、续期结果与入口切换记入后端日志
+  （systemd 日志或 dev 的 daemon.log），不含凭据值
 
 歌单浏览已实现：
 
 - 登录后展示用户创建（✎）与收藏（♥）的歌单列表
 - j/k/↑/↓ 移动，g/G 顶部/底部，enter 进入歌单查看歌曲，b/esc 返回
-- 歌曲列表展示 歌名 - 艺术家 与时长（`PlaylistTrackAllService` 一次拉全）
+- 歌曲列表展示 歌名 - 艺术家 与时长（歌单详情一次取全；超过 1000 首的歌单，缺的详情用歌曲详情接口分批补齐）
 - `r` 为全局刷新（自救入口，任何页面可用）：后端催动等待中的网络重试、补拉缺失歌词、
   重新确认登录态（未登录则重建二维码）并推送全量快照，前端重拉歌单列表与当前歌单歌曲；
   幂等，不中断播放与队列
@@ -224,7 +237,7 @@ Cookie 接收均在 daemon 内进行；前端只负责把二维码 URL 渲染为
 栅格锚定：正文区固定高度（总高 - chromeFixed(6) - 歌词行数 - 各区块间距），超出截断、不足补空行，
 底部区块（歌词/进度/状态/帮助）恒定锚定在屏幕底部，不随正文内容多少浮动；
 登录页二维码只补不截（截断将无法扫描）；加载/错误提示在正文区水平居中。
-- 歌词走 `LyricService`（linuxapi），返回 LRC 文本（每句带 `[mm:ss.xx]` 时间戳），
+- 歌词走 EAPI `song/lyric`，返回 LRC 文本（每句带 `[mm:ss.xx]` 时间戳），
   翻译按相同时间戳并入原文行；`parseLRC`/`mergeTranslation`/`lyricLineAt` 为纯函数，附单测
 - 滚动采用按需定时（`scheduleLyricTick`）：在下一句歌词到来时刻唤醒一次并重新校位，
   暂停、无歌词、最后一句后完全停止；定时器带序号（lyricSeq）防止暂停/切歌后残留过期定时器
@@ -255,7 +268,7 @@ Cookie 接收均在 daemon 内进行；前端只负责把二维码 URL 渲染为
     每次变动即写入；启动时恢复，上次播放的歌曲恢复为待播（暂停）状态，按 space 或桌面播放键开始
   - 支持从历史/下一首队列/歌单删除条目（RemoveHistory/RemoveNextUp/RemovePlaylist/RemoveCurrent）；
     当前曲为显式字段（持有副本），RemoveCurrent 保留歌单位置锚点以保证 Next 从原位置之后继续
-- 健壮性：网易云请求统一 15s 超时，错误信息识别库的 520 传输层哨兵码并带出真实原因；
+- 健壮性：网易云请求统一 15s 超时（含入口顺延），业务错误优先带出服务端的提示文字（如风控原因）；
   播放地址请求带递增序号、歌单响应带歌单 ID，过期响应丢弃；
   后端对 SIGTERM 等信号兜底清理 mpv/D-Bus/IPC socket；配置文件损坏时以默认配置运行并提示，
   且该次运行退出不写回
@@ -274,8 +287,8 @@ Cookie 接收均在 daemon 内进行；前端只负责把二维码 URL 渲染为
   上述待播重试管道（自动重建播放器恢复播放）；主动切歌/停止产生的 stop/redirect 事件不上报，
   加载中/已暂停/重试中的旧流事件丢弃；已暂停时进程退出仅提示，下次播放时重建
 - mpv 通过独立 IPC 长连接监听 `end-file`（仅 reason=eof）实现自然播完自动连播
-- 播放地址走 EAPI（官方客户端通道）：WEAPI 试听接口对会员歌曲的 Hi-Res
-  会错误标注甚至混发文件，EAPI 的等级与文件均与实际一致
+- 播放地址走 EAPI 且使用完整的 PC 客户端档案，接口等级与实际文件一致
+  （网页端通道与残缺设备头都会把 Hi-Res 标成 lossless）；未登录时不发请求
 - 音质从面向用户的 `$XDG_CONFIG_HOME/molpe/config.json` 读取，支持
   `standard`、`higher`、`exhigh`、`lossless`、`hires`
 - 运行期间按 `a` 打开音质选择弹窗；后端统一保存偏好并按原进度和暂停状态重新取流，队列和历史保持稳定；手动修改配置文件后重启生效

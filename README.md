@@ -15,7 +15,7 @@ Linux 终端里的极简网易云音乐播放器。
 
 ## 功能
 
-- 终端二维码登录网易云账号（Cookie 本地持久化）
+- 终端二维码登录网易云账号（登录凭据本地持久化，到期自动续期）
 - 浏览自己创建与收藏的歌单
 - 播放 / 暂停 / 上一首 / 下一首，顺序、列表循环、随机三种模式
 - "下一首播放"队列，指定的歌拥有最高优先级
@@ -120,12 +120,12 @@ python3 packaging/macos/build.py --go "$(command -v go)" --output dist/macos-rev
 ```sh
 ./dev.sh        # 构建并启动隔离的开发实例；后端已在跑则直接重连
 ./dev.sh -r     # 强制重启后端（改了后端代码想立即生效时用）
-./dev.sh --no-inherit  # 不复制正式版的配置、主题或登录 Cookie
+./dev.sh --no-inherit  # 不复制正式版的配置、主题或登录凭据
 ```
 
-它把 XDG 各目录指向 `/tmp/molpe-dev/`，socket、配置、Cookie、队列与正式版完全隔离，
+它把 XDG 各目录指向 `/tmp/molpe-dev/`，socket、配置、登录凭据、队列与正式版完全隔离，
 并手动启动后端（绕过 systemd，不会拉起已安装的旧版）；首次运行会继承正式版的登录
-Cookie、配置和自定义主题，删掉 `/tmp/molpe-dev` 即回到全新环境。
+凭据、配置和自定义主题，删掉 `/tmp/molpe-dev` 即回到全新环境。
 可用 `MOLPE_DEV_ROOT=/绝对路径 ./dev.sh --no-inherit` 指定另一套隔离目录。
 
 后端脱离脚本独立存活，生命周期与正式版一致：TUI 里 `q` 完全退出、`Q` 转后台后重跑
@@ -140,7 +140,8 @@ Cookie、配置和自定义主题，删掉 `/tmp/molpe-dev` 即回到全新环�
 
 ## 致谢
 
-- [go-musicfox](https://github.com/go-musicfox/go-musicfox)：本项目的灵感来源，其 Go 版网易云 API 封装（[netease-music](https://github.com/go-musicfox/netease-music)）让这一切成为可能
+- [go-musicfox](https://github.com/go-musicfox/go-musicfox)：本项目的灵感来源，早期的网易云接口层基于其 Go 版封装 [netease-music](https://github.com/go-musicfox/netease-music)
+- GLM（智谱）：网易云接口层的自研重写与风控问题排查出自其手
 - Kimi：感谢奋笔疾书，本项目的大量代码出自其手（~~作者主要负责提需求和验收~~
 
 ## License
