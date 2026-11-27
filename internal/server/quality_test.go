@@ -64,7 +64,7 @@ func TestQualitySaveError(t *testing.T) {
 func TestQualityReload(t *testing.T) {
 	for _, paused := range []bool{true, false} {
 		s := qualityServer(t)
-		client, err := netease.NewClient(filepath.Join(t.TempDir(), "cookies"))
+		client, err := netease.NewClient(filepath.Join(t.TempDir(), "session.json"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -111,7 +111,7 @@ func TestQualityStream(t *testing.T) {
 		t.Skip("未安装 mpv，跳过音质切换集成测试")
 	}
 	s := qualityServer(t)
-	client, err := netease.NewClient(filepath.Join(t.TempDir(), "cookies"))
+	client, err := netease.NewClient(filepath.Join(t.TempDir(), "session.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

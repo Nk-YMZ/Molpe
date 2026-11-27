@@ -2,7 +2,7 @@
 # dev.sh — 在完全隔离的环境中运行开发版木末，不影响已安装的 AUR 版本。
 #
 # 做法：把 XDG 各目录指向 /tmp/molpe-dev/，dev 实例的 socket、配置、
-# Cookie、队列持久化全部独立；手动启动后端（绕过 systemd，不会拉起
+# 登录凭据、队列持久化全部独立；手动启动后端（绕过 systemd，不会拉起
 # 旧版 /usr/bin/molpe），再启动前端连接自己的 socket。
 #
 # 后端脱离脚本独立存活，还原正式版的完整生命周期：
@@ -11,7 +11,7 @@
 # - ./dev.sh -r：强制杀掉旧后端再起新的（改了后端代码想立即生效时用）。
 #
 # 注意：
-# - 首次运行会继承正式版的登录 Cookie、config.json 与自定义主题
+# - 首次运行会继承正式版的登录凭据、config.json 与自定义主题
 #   （仅当 dev 环境还没有），删除 /tmp/molpe-dev 即恢复全新环境。
 # - MPRIS 总线名全用户唯一：测试媒体键/桌面组件前请先
 #   `systemctl --user stop molpe` 停掉正式版后端。
@@ -105,11 +105,17 @@ else
 		echo "==> 已继承正式版自定义主题"
 	fi
 
-	# dev 数据目录还没有 Cookie 时，从正式版复制一份，免去扫码登录。
-	if [[ "$INHERIT" -eq 1 && ! -f "$XDG_DATA_HOME/molpe/cookies" && -f "$REAL_DATA_HOME/molpe/cookies" ]]; then
-		mkdir -p "$XDG_DATA_HOME/molpe"
-		install -m 600 "$REAL_DATA_HOME/molpe/cookies" "$XDG_DATA_HOME/molpe/cookies"
-		echo "==> 已复制正式版登录 Cookie 到 dev 环境"
+	# dev 数据目录还没有登录凭据时，从正式版复制一份，免去扫码登录。
+	devSession="$XDG_DATA_HOME/molpe/session.json"
+	if [[ "$INHERIT" -eq 1 && ! -f "$devSession" && ! -f "$XDG_DATA_HOME/molpe/cookies" ]]; then
+		for name in session.json cookies; do
+			if [[ -f "$REAL_DATA_HOME/molpe/$name" ]]; then
+				mkdir -p "$XDG_DATA_HOME/molpe"
+				install -m 600 "$REAL_DATA_HOME/molpe/$name" "$XDG_DATA_HOME/molpe/$name"
+				echo "==> 已复制正式版登录凭据（$name）到 dev 环境"
+				break
+			fi
+		done
 	fi
 
 	echo "==> 启动 dev 后端（日志: ${LOG}）"

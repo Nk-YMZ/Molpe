@@ -34,25 +34,26 @@ type SongURL struct {
 	Type  string // flac / mp3 等
 }
 
-// SongURL 按指定音质获取歌曲播放地址。
-// 使用 EAPI（官方客户端通道）：WEAPI 试听接口对会员歌曲的 Hi-Res
-// 会错误标注为 lossless，EAPI 返回的等级与实际文件一致。
+// SongURL 按指定音质获取歌曲播放地址及其实际音质。
+//
+// 使用 EAPI（官方客户端通道）与完整的 PC 客户端档案：网页端通道对会员歌曲的
+// Hi-Res 会错误标注，设备头残缺时同样把 Hi-Res 标成 lossless。未登录时不发
+// 请求（匿名只能拿到试听音质），直接返回 ErrNotLoggedIn。
 func (c *Client) SongURL(id int64, quality string) (*SongURL, error) {
-	data := map[string]string{
+	if !c.LoggedIn() {
+		return nil, ErrNotLoggedIn
+	}
+	op := fmt.Sprintf("获取歌曲 %d 播放地址", id)
+	code, body, err := c.call(op, "/api/song/enhance/player/url/v1", map[string]any{
 		"ids":        "[" + strconv.FormatInt(id, 10) + "]",
 		"level":      NormalizeQuality(quality),
 		"encodeType": "flac",
-	}
-	code, body, err := c.doEapi(
-		"https://interface3.music.163.com/eapi/song/enhance/player/url/v1",
-		"/api/song/enhance/player/url/v1",
-		data,
-	)
+	})
 	if err != nil {
-		return nil, fmt.Errorf("获取歌曲 %d 播放地址失败（网络传输错误）: %w", id, err)
+		return nil, err
 	}
 	if code != 200 {
-		return nil, requestError(fmt.Sprintf("获取歌曲 %d 播放地址", id), code, body)
+		return nil, requestError(op, code, body)
 	}
 	var resp struct {
 		Code int `json:"code"`

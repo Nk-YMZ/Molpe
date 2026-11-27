@@ -1,13 +1,11 @@
 package netease
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"net/http"
 	"time"
-
-	"github.com/go-musicfox/netease-music/util"
-	"github.com/imroc/req/v3"
 )
 
 // 二维码登录状态码（网易云接口定义）。
@@ -18,26 +16,49 @@ const (
 	QRCodeSuccess = 803 // 登录成功
 )
 
-// qrLoginUserAgent 与二维码登录请求配套使用的浏览器 UA。
-const qrLoginUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
+// qrType 是二维码登录接口的 type 参数，决定申请到的 key 属于哪类登录：
+// 1 为网页端（手机扫码时提示“登录网页版”），3 为桌面客户端。
+const qrType = 3
 
-// qrKeyClient 专用于获取二维码 unikey。
-// 背景：网易云二维码登录接口检测 TLS 指纹，标准 Go http.Client 的握手特征
-// 易被风控拒绝（返回 -462），这里通过 req 模拟 Chrome 的 TLS ClientHello。
-// unikey 接口不能携带共享 Jar 中的 Cookie，因此单独构建。
-var qrKeyClient = req.C().
-	SetUserAgent(qrLoginUserAgent).
-	SetCookieJar(nil).
-	SetTimeout(15 * time.Second).
-	SetTLSFingerprintChrome()
+// ErrNotLoggedIn 表示本地没有登录凭据，请求未发出。
+var ErrNotLoggedIn = errors.New("未登录")
 
-// qrCheckClient 绑定当前会话 Jar，轮询二维码状态（登录 Cookie 需写入 Jar）。
-func qrCheckClient(jar http.CookieJar) *req.Client {
-	return req.C().
-		SetUserAgent(qrLoginUserAgent).
-		SetCookieJar(jar).
-		SetTimeout(15 * time.Second).
-		SetTLSFingerprintChrome()
+// StatusError 是服务端对请求返回的非预期业务状态（如参数错误、风控），
+// 区别于请求没能完成的传输错误。
+type StatusError struct {
+	Op     string
+	Code   float64
+	Detail string // 响应体片段，便于诊断
+}
+
+func (e *StatusError) Error() string {
+	if e.Detail == "" {
+		return fmt.Sprintf("%s: code=%v", e.Op, e.Code)
+	}
+	return fmt.Sprintf("%s: code=%v，%s", e.Op, e.Code, e.Detail)
+}
+
+// requestError 把非 200 的业务状态码构造成错误：优先带出服务端给的 message
+// （如风控提示），没有时带出截断后的响应体，便于诊断。
+func requestError(op string, code float64, body []byte) error {
+	var payload struct {
+		Message string `json:"message"`
+	}
+	_ = json.Unmarshal(body, &payload)
+	detail := payload.Message
+	if detail == "" {
+		detail = string(bytes.TrimSpace(body))
+	}
+	if runeCount := len([]rune(detail)); runeCount > 200 {
+		detail = string([]rune(detail)[:200]) + "…"
+	}
+	return &StatusError{Op: op, Code: code, Detail: detail}
+}
+
+// IsStatusError 判断错误是否为服务端返回的业务状态（而非传输失败）。
+func IsStatusError(err error) bool {
+	var e *StatusError
+	return errors.As(err, &e)
 }
 
 // QRLogin 表示一次二维码登录会话。
@@ -48,77 +69,38 @@ type QRLogin struct {
 
 // NewQRLogin 获取新的登录二维码。
 func (c *Client) NewQRLogin() (*QRLogin, error) {
-	data := map[string]interface{}{
-		"type":         1,
-		"noCheckToken": true,
-	}
-	params, err := util.ApiParamsEncode(data)
+	code, body, err := c.call("获取登录二维码", "/api/login/qrcode/unikey", map[string]any{"type": qrType})
 	if err != nil {
-		return nil, fmt.Errorf("加密请求参数失败: %w", err)
+		return nil, err
 	}
-
-	resp, err := qrKeyClient.R().
-		SetHeaders(map[string]string{
-			"Referer": "https://music.163.com/",
-			"Origin":  "https://music.163.com",
-		}).
-		SetFormData(params).
-		Post("https://music.163.com/weapi/login/qrcode/unikey")
-	if err != nil {
-		return nil, fmt.Errorf("获取登录二维码失败: %w", err)
+	if code != 200 {
+		return nil, requestError("获取登录二维码", code, body)
 	}
-
-	var result struct {
-		Code   int    `json:"code"`
+	var resp struct {
 		UniKey string `json:"unikey"`
 	}
-	if err := json.Unmarshal(resp.Bytes(), &result); err != nil {
+	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("解析二维码响应失败: %w", err)
 	}
-	if result.Code != 200 || result.UniKey == "" {
-		return nil, fmt.Errorf("获取登录二维码失败: code=%d body=%s", result.Code, resp.Bytes())
+	if resp.UniKey == "" {
+		return nil, errors.New("获取登录二维码失败: 响应缺少 unikey")
 	}
-
-	chainID := util.GenerateChainID(c.jar)
-	return &QRLogin{
-		UniKey: result.UniKey,
-		URL:    "http://music.163.com/login?codekey=" + result.UniKey + "&chainId=" + chainID,
-	}, nil
+	return &QRLogin{UniKey: resp.UniKey, URL: "https://music.163.com/login?codekey=" + resp.UniKey}, nil
 }
 
-// CheckQRLogin 轮询二维码状态，返回 QRCode* 状态码。
-// 登录成功时服务端下发的 Cookie 已写入客户端 Jar。
+// CheckQRLogin 轮询二维码状态，返回 QRCode* 状态码；登录成功时服务端
+// 下发的 MUSIC_U 已并入会话。状态码不属于登录流程（如风控）时返回错误。
 func (c *Client) CheckQRLogin(unikey string) (int, error) {
-	util.ApplyRequestStrategy(c.jar)
-
-	data := map[string]interface{}{
-		"type":         1,
-		"noCheckToken": true,
-		"key":          unikey,
-	}
-	params, err := util.ApiParamsEncode(data)
+	code, body, err := c.call("检查二维码状态", "/api/login/qrcode/client/login",
+		map[string]any{"type": qrType, "key": unikey})
 	if err != nil {
-		return 0, fmt.Errorf("加密请求参数失败: %w", err)
+		return 0, err
 	}
-
-	resp, err := qrCheckClient(c.jar).R().
-		SetHeaders(map[string]string{
-			"Referer": "https://music.163.com/",
-			"Origin":  "https://music.163.com",
-		}).
-		SetFormData(params).
-		Post("https://music.163.com/weapi/login/qrcode/client/login")
-	if err != nil {
-		return 0, fmt.Errorf("检查二维码状态失败: %w", err)
+	switch code {
+	case QRCodeExpired, QRCodeWaiting, QRCodeScanned, QRCodeSuccess:
+		return int(code), nil
 	}
-
-	var result struct {
-		Code int `json:"code"`
-	}
-	if err := json.Unmarshal(resp.Bytes(), &result); err != nil {
-		return 0, fmt.Errorf("解析二维码状态失败: %w", err)
-	}
-	return result.Code, nil
+	return int(code), requestError("扫码登录未被接受", code, body)
 }
 
 // Account 是当前登录账号的基本信息。
@@ -127,18 +109,23 @@ type Account struct {
 	Nickname string
 }
 
-// AccountInfo 查询当前登录账号；未登录时返回 (nil, nil)。
+// AccountInfo 查询当前登录账号；未登录（本地无凭据，或服务端判定未登录、
+// 只是匿名账号）时返回 (nil, nil)。
 func (c *Client) AccountInfo() (*Account, error) {
-	code, body, err := c.doWeapi("nuser/account/get", nil)
+	if !c.LoggedIn() {
+		return nil, nil // 没有凭据即未登录，不必请求
+	}
+	code, body, err := c.call("查询账号信息", "/api/nuser/account/get", map[string]any{})
 	if err != nil {
-		return nil, fmt.Errorf("查询账号信息失败（网络传输错误）: %w", err)
+		return nil, err
 	}
 	if code != 200 {
 		return nil, requestError("查询账号信息", code, body)
 	}
 	var resp struct {
 		Account *struct {
-			ID int64 `json:"id"`
+			ID        int64 `json:"id"`
+			Anonymous bool  `json:"anonimous"`
 		} `json:"account"`
 		Profile *struct {
 			Nickname string `json:"nickname"`
@@ -147,25 +134,41 @@ func (c *Client) AccountInfo() (*Account, error) {
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("解析账号信息失败: %w", err)
 	}
-	if resp.Account == nil {
+	if resp.Account == nil || resp.Account.ID == 0 || resp.Account.Anonymous || resp.Profile == nil {
 		return nil, nil
 	}
-	acc := &Account{ID: resp.Account.ID}
-	if resp.Profile != nil {
-		acc.Nickname = resp.Profile.Nickname
-	}
-	return acc, nil
+	return &Account{ID: resp.Account.ID, Nickname: resp.Profile.Nickname}, nil
 }
 
-// RefreshLogin 刷新登录态，延长 Cookie 有效期。
-func (c *Client) RefreshLogin() error {
-	util.ApplyRequestStrategy(c.jar) // 为 Cookie 应用反风控策略
-	code, body, err := c.doWeapi("login/token/refresh", nil)
+// RenewDue 报告是否到了续期检查时间：已登录，且距上次续期调用（或登录）
+// 满一个间隔。
+func (c *Client) RenewDue() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.sess.logged() && time.Since(c.sess.RenewCheckedAt) >= renewInterval
+}
+
+// RefreshLogin 续期登录态，服务端换发新 MUSIC_U 时返回 true（新凭据已落盘）；
+// 对签发不久的凭据服务端不再换发，返回 (false, nil)。请求失败时不记检查时间，
+// 下次启动或手动刷新时会再试。
+func (c *Client) RefreshLogin() (bool, error) {
+	c.mu.Lock()
+	before := c.sess.IssuedAt
+	c.mu.Unlock()
+	code, body, err := c.call("刷新登录态", "/api/login/token/refresh", nil)
 	if err != nil {
-		return fmt.Errorf("刷新登录态失败（网络传输错误）: %w", err)
+		return false, err
+	}
+	c.mu.Lock()
+	c.sess.RenewCheckedAt = time.Now()
+	renewed := c.sess.IssuedAt.After(before)
+	err = saveSession(c.path, c.sess)
+	c.mu.Unlock()
+	if err != nil {
+		return renewed, err
 	}
 	if code != 200 {
-		return requestError("刷新登录态", code, body)
+		return false, requestError("刷新登录态", code, body)
 	}
-	return nil
+	return renewed, nil
 }

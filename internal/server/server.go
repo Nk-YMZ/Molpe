@@ -26,8 +26,11 @@ import (
 	"molpe/internal/queue"
 )
 
-// queueStateFile 是数据目录下队列状态快照的文件名。
-const queueStateFile = "queue.json"
+// 数据目录下的持久化文件：登录会话（凭据与设备身份）与队列状态快照。
+const (
+	sessionFile    = "session.json"
+	queueStateFile = "queue.json"
+)
 
 // qrPollInterval 是二维码状态的轮询间隔（仅在登录会话进行期间运行）。
 const qrPollInterval = 2 * time.Second
@@ -118,7 +121,7 @@ func New(dirs config.Dirs) (*Server, error) {
 		endCh:    make(chan struct{}, 1),
 		done:     make(chan struct{}),
 	}
-	client, err := netease.NewClient(filepath.Join(dirs.Data, "cookies"))
+	client, err := netease.NewClient(filepath.Join(dirs.Data, sessionFile))
 	if err != nil {
 		return nil, err
 	}

@@ -8,6 +8,9 @@ import (
 	"time"
 )
 
+// songDetailBatch 是歌曲详情接口单次请求的 ID 数上限。
+const songDetailBatch = 500
+
 // Playlist 是用户歌单的基本信息。
 type Playlist struct {
 	ID         int64
@@ -18,13 +21,11 @@ type Playlist struct {
 
 // UserPlaylists 获取用户创建与收藏的歌单。
 func (c *Client) UserPlaylists(uid int64) ([]Playlist, error) {
-	code, body, err := c.doWeapi("user/playlist", map[string]string{
-		"uid":    strconv.FormatInt(uid, 10),
-		"limit":  "1000",
-		"offset": "0",
+	code, body, err := c.call("获取歌单列表", "/api/user/playlist", map[string]any{
+		"uid": uid, "limit": 1000, "offset": 0, "includeVideo": true,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("获取歌单列表失败（网络传输错误）: %w", err)
+		return nil, err
 	}
 	if code != 200 {
 		return nil, requestError("获取歌单列表", code, body)
@@ -61,11 +62,12 @@ type Song struct {
 	Name     string
 	Artists  string // 多个艺术家以 / 分隔
 	Album    string
-	CoverURL string // 专辑封面地址，供 MPRIS 等系统组件使用
+	CoverURL string // 专辑封面地址（统一为 https），供封面显示与 MPRIS 使用
 	Duration time.Duration
 }
 
-// songDetailJSON 是歌曲详情接口（v3/song/detail）返回的单曲结构。
+// songDetailJSON 是歌曲对象的公共字段：歌单详情的 tracks[] 与歌曲详情接口的
+// songs[] 结构相同（实测逐字段一致，仅封面地址协议不同）。
 type songDetailJSON struct {
 	ID   int64  `json:"id"`
 	Name string `json:"name"`
@@ -84,25 +86,30 @@ func (t songDetailJSON) toSong() Song {
 	for _, a := range t.Ar {
 		artists = append(artists, a.Name)
 	}
+	cover := t.Al.PicURL
+	if after, ok := strings.CutPrefix(cover, "http://"); ok {
+		cover = "https://" + after // 歌单详情下发 http 地址，同一资源支持 https
+	}
 	return Song{
 		ID:       t.ID,
 		Name:     t.Name,
 		Artists:  strings.Join(artists, "/"),
 		Album:    t.Al.Name,
-		CoverURL: t.Al.PicURL,
+		CoverURL: cover,
 		Duration: time.Duration(t.DT) * time.Millisecond,
 	}
 }
 
-// PlaylistSongs 获取歌单内的全部歌曲：先拉歌单详情取得完整曲目 ID 列表，
-// 再分批（每批 500 首）拉取歌曲详情。
+// PlaylistSongs 获取歌单内的全部歌曲，顺序与歌单一致。
+//
+// 歌单详情一次返回全部曲目及其完整信息；歌单过大时服务端可能只返回部分
+// 曲目详情（曲目 ID 列表仍是全量），缺的部分用歌曲详情接口分批补齐。
 func (c *Client) PlaylistSongs(id int64) ([]Song, error) {
-	pid := strconv.FormatInt(id, 10)
-	code, body, err := c.doLinuxapi("https://music.163.com/api/v3/playlist/detail", map[string]string{
-		"id": pid, "n": "100000", "s": "8",
+	code, body, err := c.call("获取歌单歌曲", "/api/v6/playlist/detail", map[string]any{
+		"id": id, "n": 100000, "s": 8,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("获取歌单歌曲失败（网络传输错误）: %w", err)
+		return nil, err
 	}
 	if code != 200 {
 		return nil, requestError("获取歌单歌曲", code, body)
@@ -112,48 +119,71 @@ func (c *Client) PlaylistSongs(id int64) ([]Song, error) {
 			TrackIDs []struct {
 				ID int64 `json:"id"`
 			} `json:"trackIds"`
+			Tracks []songDetailJSON `json:"tracks"`
 		} `json:"playlist"`
 	}
 	if err := json.Unmarshal(body, &detail); err != nil {
 		return nil, fmt.Errorf("解析歌单歌曲失败: %w", err)
 	}
 
-	var songs []Song
-	ids := detail.Playlist.TrackIDs
-	for start := 0; start < len(ids); start += 500 {
-		batch := ids[start:min(start+500, len(ids))]
-		var idList strings.Builder
-		var cParam strings.Builder
-		cParam.WriteByte('[')
-		for i, t := range batch {
-			if i > 0 {
-				idList.WriteByte(',')
-				cParam.WriteByte(',')
-			}
-			s := strconv.FormatInt(t.ID, 10)
-			idList.WriteString(s)
-			cParam.WriteString(`{"id":` + s + `}`)
+	byID := make(map[int64]Song, len(detail.Playlist.Tracks))
+	for _, t := range detail.Playlist.Tracks {
+		s := t.toSong()
+		byID[s.ID] = s
+	}
+	var missing []int64
+	for _, t := range detail.Playlist.TrackIDs {
+		if _, ok := byID[t.ID]; !ok {
+			missing = append(missing, t.ID)
 		}
-		cParam.WriteByte(']')
-		code, body, err = c.doWeapi("v3/song/detail", map[string]string{
-			"c":   cParam.String(),
-			"ids": "[" + idList.String() + "]",
-		})
+	}
+	for start := 0; start < len(missing); start += songDetailBatch {
+		batch := missing[start:min(start+songDetailBatch, len(missing))]
+		songs, err := c.songDetails(batch)
 		if err != nil {
-			return nil, fmt.Errorf("获取歌单歌曲失败（网络传输错误）: %w", err)
+			return nil, err
 		}
-		if code != 200 {
-			return nil, requestError("获取歌单歌曲", code, body)
+		for _, s := range songs {
+			byID[s.ID] = s
 		}
-		var resp struct {
-			Songs []songDetailJSON `json:"songs"`
+	}
+	// 按曲目 ID 列表的顺序输出；已下架（两处都查不到）的曲目自然被跳过。
+	songs := make([]Song, 0, len(detail.Playlist.TrackIDs))
+	for _, t := range detail.Playlist.TrackIDs {
+		if s, ok := byID[t.ID]; ok {
+			songs = append(songs, s)
 		}
-		if err := json.Unmarshal(body, &resp); err != nil {
-			return nil, fmt.Errorf("解析歌单歌曲失败: %w", err)
+	}
+	return songs, nil
+}
+
+// songDetails 按 ID 批量拉取歌曲详情。
+func (c *Client) songDetails(ids []int64) ([]Song, error) {
+	var cParam strings.Builder
+	cParam.WriteByte('[')
+	for i, id := range ids {
+		if i > 0 {
+			cParam.WriteByte(',')
 		}
-		for _, t := range resp.Songs {
-			songs = append(songs, t.toSong())
-		}
+		cParam.WriteString(`{"id":` + strconv.FormatInt(id, 10) + `}`)
+	}
+	cParam.WriteByte(']')
+	code, body, err := c.call("获取歌曲详情", "/api/v3/song/detail", map[string]any{"c": cParam.String()})
+	if err != nil {
+		return nil, err
+	}
+	if code != 200 {
+		return nil, requestError("获取歌曲详情", code, body)
+	}
+	var resp struct {
+		Songs []songDetailJSON `json:"songs"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("解析歌曲详情失败: %w", err)
+	}
+	songs := make([]Song, 0, len(resp.Songs))
+	for _, t := range resp.Songs {
+		songs = append(songs, t.toSong())
 	}
 	return songs, nil
 }

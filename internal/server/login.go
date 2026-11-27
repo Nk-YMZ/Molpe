@@ -1,6 +1,7 @@
 package server
 
 import (
+	"log"
 	"time"
 
 	"molpe/internal/netease"
@@ -32,12 +33,22 @@ type qrCheckResult struct {
 	err  error
 }
 
-// checkLogin 异步确认登录态；startup 表示启动时的首次确认
-// （确认成功后若配置开启自动开播则恢复播放）。
+// checkLogin 异步确认登录态；startup 表示启动时的首次确认（确认成功后若配置
+// 开启自动开播则恢复播放）。已登录且到了续期检查时间时顺带续期：续期由
+// 后台自动完成，无需重新扫码，只有服务端判定凭据失效才会回到登录页。
 func (s *Server) checkLogin(startup bool) {
 	go func() {
-		_ = s.client.RefreshLogin() // 刷新失败不影响本地登录态判断
 		acc, err := s.client.AccountInfo()
+		if err == nil && acc != nil && s.client.RenewDue() {
+			switch renewed, rerr := s.client.RefreshLogin(); {
+			case rerr != nil:
+				log.Printf("续期登录态失败: %v", rerr)
+			case renewed:
+				log.Print("登录态已续期，服务端换发了新凭据")
+			default:
+				log.Print("登录态无需续期：服务端未换发凭据")
+			}
+		}
 		s.results <- loginResult{account: acc, err: err, startup: startup}
 	}()
 }
@@ -49,11 +60,20 @@ func (s *Server) checkLogin(startup bool) {
 func (s *Server) handleLogin(r loginResult) {
 	s.checked = true
 	if r.err != nil {
+		log.Printf("检查登录状态失败: %v", r.err)
 		s.pushNote("检查登录状态失败："+r.err.Error(), true)
 		s.pushState()
 		return
 	}
+	if r.account == nil && s.account != nil {
+		// 登录态在服务端失效：连同凭据的时间信息一起记下，便于定位被要求
+		// 重新登录的原因（凭据过期、未续期，还是被风控作废）。
+		log.Printf("登录态失效（%s）", s.client.SessionInfo())
+	}
 	s.account = r.account
+	if r.startup && s.account != nil {
+		log.Printf("已登录（%s）", s.client.SessionInfo())
+	}
 	if s.account == nil && (s.qr == nil || s.qrCode == netease.QRCodeExpired) {
 		s.newQR()
 	}
@@ -128,6 +148,12 @@ func (s *Server) handleQRCheck(r qrCheckResult) {
 		return
 	}
 	switch {
+	case r.err != nil && netease.IsStatusError(r.err):
+		// 服务端明确拒绝（如风控）：停止轮询，按 r 刷新时重建二维码。
+		s.stopQRPoll()
+		s.qr = nil
+		s.pushNote(r.err.Error()+"，按 r 重试", true)
+		s.pushState()
 	case r.err != nil:
 		s.scheduleQRPoll() // 网络异常时静默重试
 	case r.code == netease.QRCodeSuccess:

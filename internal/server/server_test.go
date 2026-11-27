@@ -201,9 +201,30 @@ func TestHandleLoginKeepsAccountOnError(t *testing.T) {
 	}
 }
 
+// TestQRCheckRejected 二维码轮询被服务端明确拒绝（如风控）：停止轮询并
+// 清掉当前二维码，等待手动刷新；网络异常则继续静默轮询。
+func TestQRCheckRejected(t *testing.T) {
+	new := func() *Server {
+		return &Server{queue: queue.New(nil, queue.ModeLoop, queue.Options{}), results: make(chan any, 8),
+			qr: &netease.QRLogin{UniKey: "k"}, qrCode: netease.QRCodeWaiting}
+	}
+	s := new()
+	s.handleQRCheck(qrCheckResult{seq: s.qrSeq, err: errors.New("网络传输错误")})
+	if s.qr == nil || s.qrTimer == nil {
+		t.Fatal("网络异常应继续轮询")
+	}
+	s.stopQRPoll()
+
+	s = new()
+	s.handleQRCheck(qrCheckResult{seq: s.qrSeq, err: &netease.StatusError{Op: "扫码登录未被接受", Code: 8821}})
+	if s.qr != nil || s.qrTimer != nil {
+		t.Fatal("服务端拒绝时应停止轮询并清掉二维码")
+	}
+}
+
 // TestRefresh 全局刷新：催动等待中的网络重试（转入加载中），不中断当前状态。
 func TestRefresh(t *testing.T) {
-	client, err := netease.NewClient(filepath.Join(t.TempDir(), "cookies"))
+	client, err := netease.NewClient(filepath.Join(t.TempDir(), "session.json"))
 	if err != nil {
 		t.Fatalf("创建客户端失败: %v", err)
 	}
@@ -290,7 +311,7 @@ func TestSeekGuards(t *testing.T) {
 // TestSeekDuringGap 歌曲间隔中快进/快退：累计目标偏移（钳制在时长内），
 // 取消间隔立即开播，定位仅属于本次开播。
 func TestSeekDuringGap(t *testing.T) {
-	client, err := netease.NewClient(filepath.Join(t.TempDir(), "cookies"))
+	client, err := netease.NewClient(filepath.Join(t.TempDir(), "session.json"))
 	if err != nil {
 		t.Fatalf("创建客户端失败: %v", err)
 	}
