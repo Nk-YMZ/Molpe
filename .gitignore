@@ -15,6 +15,9 @@ cookie*
 /molpe/
 /molpe-bin/
 
+# 调研材料：参考项目克隆与接口探测程序（仅本地保留，不纳入版本管理）
+/research/
+
 # 本地构建的可执行文件
 /molpe
 /molpe-dev-bin
